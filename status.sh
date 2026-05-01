@@ -133,19 +133,22 @@ check_file_match etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.con
 section "4. Scripts"
 
 check_script() {
-    local path="$1"
-    if [[ ! -e "$path" ]]; then
-        fail "$path missing"
-    elif [[ ! -x "$path" ]]; then
-        fail "$path exists but not executable"
+    local repo_rel="$1" sys_path="$2"
+    local repo_file="${repo_root}/${repo_rel}"
+    if [[ ! -e "$sys_path" ]]; then
+        fail "$sys_path missing"
+    elif [[ ! -x "$sys_path" ]]; then
+        fail "$sys_path exists but not executable"
+    elif [[ -f "$repo_file" ]] && ! cmp -s "$repo_file" "$sys_path"; then
+        warn "$sys_path differs from repo (stale install? re-run apply.sh)"
     else
-        ok "$path"
+        ok "$sys_path"
     fi
 }
 
-check_script /usr/local/sbin/aorus-5090-compute-load-nvidia
-check_script /usr/local/sbin/aorus-5090-disable-audio
-check_script /usr/local/sbin/aorus-5090-status
+check_script usr/local/sbin/aorus-5090-compute-load-nvidia /usr/local/sbin/aorus-5090-compute-load-nvidia
+check_script usr/local/sbin/aorus-5090-disable-audio /usr/local/sbin/aorus-5090-disable-audio
+check_script usr/local/sbin/aorus-5090-status /usr/local/sbin/aorus-5090-status
 
 # ---------------------------------------------------- 5. systemd unit state -
 section "5. systemd units"
