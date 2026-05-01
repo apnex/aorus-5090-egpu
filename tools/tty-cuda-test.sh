@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Run the CUDA Driver API smoke test from a multi-user.target context.
 #
-# Designed to be launched via systemd-run as a transient service so it survives
-# the GNOME / OpenCode session disconnection caused by `systemctl isolate
-# multi-user.target`. Results are written with fsync at every step so a kernel
-# panic does not lose the boundary information.
+# Designed to be launched detached (`nohup setsid ... &; disown`) so it
+# survives the GNOME session disconnection caused by `systemctl isolate
+# multi-user.target`. Results are written with fsync at every step so a
+# kernel panic does not lose the boundary information.
 #
 # Output directory (overwritten each run):
 #   /root/aorus-cuda-tty-test/
