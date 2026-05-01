@@ -195,7 +195,8 @@ udevadm trigger --subsystem-match=pci
 
 # If nvidia is already loaded and bound and persistenced is already running,
 # we are done and do not need to start anything. Otherwise, start the chain:
-if ! lsmod | grep -q '^nvidia '; then
+# Read /proc/modules directly to avoid SIGPIPE on lsmod under pipefail.
+if ! grep -q '^nvidia ' /proc/modules; then
     if [[ -e /sys/bus/pci/devices/0000:04:00.0 ]]; then
         printf '  starting aorus-5090-compute-load-nvidia.service\n'
         systemctl start aorus-5090-compute-load-nvidia.service
