@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Bind the AORUS RTX 5090 eGPU to the NVIDIA driver.
+#
+# Run by aorus-5090-compute-load-nvidia.service at boot, or manually for
+# diagnostics. Idempotent: if NVIDIA is already loaded and bound, this
+# script's bind step is a no-op.
+#
+# Diagnostic env vars (default off, leave alone for normal operation):
+#   AORUS_5090_DISABLE_GSP=1               -> NVreg_EnableGpuFirmware=0
+#                                             (Blackwell requires GSP; this WILL
+#                                              fail to bind on this GPU. Diagnostic only.)
+#   AORUS_5090_DISABLE_NONBLOCKING_OPEN=1  -> NVreg_EnableNonblockingOpen=0
+#                                             (does not fix the close-path wedge
+#                                              on this stack; persistenced is the fix.)
+
+set -euo pipefail
+
+gpu_dev=""
+audio_dev=""
+
+for dev in /sys/bus/pci/devices/*; do
+    [[ -r "$dev/vendor" && -r "$dev/device" ]] || continue
+    if [[ "$(<"$dev/vendor")" == "0x10de" && "$(<"$dev/device")" == "0x2b85" ]]; then
+        gpu_dev="$dev"
+    fi
+
+    if [[ "$(<"$dev/vendor")" == "0x10de" && "$(<"$dev/device")" == "0x22e8" ]]; then
+        audio_dev="$dev"
+    fi
+done
+
+if [[ -z "$gpu_dev" ]]; then
+    echo "AORUS RTX 5090 eGPU is not present on PCI." >&2
+    exit 1
+fi
+
+set_attr() {
+    local path="$1"
+    local value="$2"
+
+    if [[ -w "$path" ]]; then
+        printf '%s\n' "$value" > "$path"
+    fi
+}
+
+restore_manual_override_on_exit() {
+    local rc=$?
+
+    if [[ -n "${gpu_dev:-}" && -w "$gpu_dev/driver_override" ]]; then
+        printf '%s\n' aorus_5090_manual > "$gpu_dev/driver_override" || true
+    fi
+
+    exit "$rc"
+}
+
+trap restore_manual_override_on_exit EXIT
+
+apply_upstream_power_policy() {
+    local dev="$1"
+    local path
+
+    path="$(readlink -f "$dev")"
+    while [[ "$path" != "/" && "$path" != "/sys" && "$path" != "/sys/devices" ]]; do
+        if [[ -r "$path/vendor" && -r "$path/device" ]]; then
+            set_attr "$path/power/control" on
+            set_attr "$path/d3cold_allowed" 0
+        fi
+
+        path="$(dirname "$path")"
+    done
+}
+
+apply_upstream_power_policy "$gpu_dev"
+
+for dev in /sys/bus/pci/devices/*; do
+    [[ -r "$dev/vendor" && -r "$dev/device" ]] || continue
+    [[ "$(<"$dev/vendor")" == "0x10de" ]] || continue
+
+    case "$(<"$dev/device")" in
+        0x2b85|0x22e8)
+            set_attr "$dev/power/control" on
+            set_attr "$dev/d3cold_allowed" 0
+            ;;
+    esac
+done
+
+if [[ -n "$audio_dev" ]]; then
+    /usr/local/sbin/aorus-5090-disable-audio "${audio_dev##*/}"
+fi
+
+mapfile -t gpu_resources < "$gpu_dev/resource"
+read -r bar0_start bar0_end _ <<< "${gpu_resources[0]}"
+if [[ "$bar0_start" == "0x0000000000000000" && "$bar0_end" == "0x0000000000000000" ]]; then
+    echo "RTX 5090 BAR0 is unassigned; refusing to load NVIDIA." >&2
+    echo "Cold boot with the eGPU connected so pci=realloc can allocate BAR0." >&2
+    exit 3
+fi
+
+read -r bar1_start bar1_end _ <<< "${gpu_resources[1]}"
+bar1_size=$((bar1_end - bar1_start + 1))
+min_bar1_size=$((32 * 1024 * 1024 * 1024))
+if (( bar1_size < min_bar1_size )); then
+    echo "RTX 5090 BAR1 is smaller than 32 GiB; refusing to load NVIDIA." >&2
+    echo "Confirm thunderbolt.host_reset=false is in /proc/cmdline and cold boot with the eGPU connected." >&2
+    printf 'Current BAR1: %s-%s (%s bytes)\n' "$bar1_start" "$bar1_end" "$bar1_size" >&2
+    exit 6
+fi
+
+# Allow drivers_probe to bind the nvidia driver when modprobe loads it.
+set_attr "$gpu_dev/driver_override" ""
+
+modprobe_args=()
+if [[ "${AORUS_5090_DISABLE_GSP:-0}" == "1" ]]; then
+    modprobe_args+=(NVreg_EnableGpuFirmware=0)
+fi
+if [[ "${AORUS_5090_DISABLE_NONBLOCKING_OPEN:-0}" == "1" ]]; then
+    modprobe_args+=(NVreg_EnableNonblockingOpen=0)
+fi
+
+modprobe --ignore-install nvidia "${modprobe_args[@]}"
+
+if [[ ! -L "$gpu_dev/driver" && -w /sys/bus/pci/drivers_probe ]]; then
+    printf '%s\n' "${gpu_dev##*/}" > /sys/bus/pci/drivers_probe
+fi
+
+if [[ -e /sys/module/nvidia_drm ]]; then
+    echo "nvidia_drm is loaded; this is not the intended compute-only state." >&2
+    exit 2
+fi
+
+if [[ ! -L "$gpu_dev/driver" ]]; then
+    echo "Base nvidia module loaded, but the RTX 5090 did not bind to it." >&2
+    exit 4
+fi
+
+bound_driver="$(basename "$(readlink "$gpu_dev/driver")")"
+if [[ "$bound_driver" != "nvidia" ]]; then
+    echo "RTX 5090 is bound to '$bound_driver', not 'nvidia'." >&2
+    exit 5
+fi
+
+# Restore the manual override now that we have bound on purpose; this prevents
+# any future udev re-add from auto-binding the device to a different driver.
+set_attr "$gpu_dev/driver_override" aorus_5090_manual
+trap - EXIT
+
+echo "RTX 5090 is bound to the base nvidia driver."
+if [[ "${AORUS_5090_DISABLE_GSP:-0}" == "1" ]]; then
+    echo "NVIDIA GSP firmware was disabled for this bind attempt."
+fi
+if [[ "${AORUS_5090_DISABLE_NONBLOCKING_OPEN:-0}" == "1" ]]; then
+    echo "NVIDIA nonblocking open was disabled for this bind attempt."
+fi

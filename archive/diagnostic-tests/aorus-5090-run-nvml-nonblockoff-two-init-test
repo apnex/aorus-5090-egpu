@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -u
+
+prefix=/root/aorus-5090-nvml-nonblockoff-two-init
+status_file=${prefix}-status.txt
+first_progress=${prefix}-first-progress.txt
+second_progress=${prefix}-second-progress.txt
+ioctl_log=${prefix}-ioctl.log
+pre_status=${prefix}-pre-status.txt
+bind_status=${prefix}-bind-status.txt
+post_status=${prefix}-post-status.txt
+base_bind_log=${prefix}-base-bind.log
+first_output=${prefix}-first-output.txt
+second_output=${prefix}-second-output.txt
+kernel_log=${prefix}-kernel.log
+bar_before=${prefix}-bar-before.txt
+bar_after=${prefix}-bar-after.txt
+params_after=${prefix}-nvidia-params.txt
+trace_so=/root/aorus-5090-nvml-ioctl-trace.so
+
+write_status() {
+    printf '%s\n' "$@" > "$status_file"
+    sync -f "$status_file" 2>/dev/null || sync
+}
+
+module_loaded() {
+    local name="$1"
+    local loaded_module
+
+    while read -r loaded_module _; do
+        [[ "$loaded_module" == "$name" ]] && return 0
+    done < /proc/modules
+    return 1
+}
+
+capture_after_state() {
+    /usr/local/sbin/aorus-5090-status > "$post_status" 2>&1
+    journalctl -k -b --no-pager -g 'NVRM|Xid|nvidia|nvidia_uvm|nvidia_drm|NVML|AER|PCIe Bus Error|DPC|fallen off|GPU has fallen|GSP|NV_ERR|BAR0|BAR 0|BUG|Oops|panic|lockup|hung|watchdog' > "$kernel_log" 2>&1
+}
+
+rm -f "$status_file" "$first_progress" "$second_progress" "$ioctl_log" \
+      "$pre_status" "$bind_status" "$post_status" "$base_bind_log" \
+      "$first_output" "$second_output" "$kernel_log" "$bar_before" \
+      "$bar_after" "$params_after"
+
+write_status 'nvml nonblockoff two-init test started' 'stage=precheck'
+
+if [[ ! -r "$trace_so" ]]; then
+    write_status 'nvml nonblockoff two-init test aborted' 'reason=trace_so_missing'
+    exit 91
+fi
+
+if [[ "$(< /sys/module/thunderbolt/parameters/host_reset)" != "N" ]]; then
+    write_status 'nvml nonblockoff two-init test aborted' 'reason=host_reset_not_disabled'
+    exit 92
+fi
+
+for module in nvidia nvidia_uvm nvidia_modeset nvidia_drm; do
+    if module_loaded "$module"; then
+        /usr/local/sbin/aorus-5090-status > "$pre_status" 2>&1
+        write_status 'nvml nonblockoff two-init test aborted' "reason=${module}_already_loaded"
+        exit 90
+    fi
+done
+
+/usr/local/sbin/aorus-5090-status > "$pre_status" 2>&1
+lspci -vv -s 04:00.0 > "$bar_before" 2>&1
+
+write_status 'nvml nonblockoff two-init test started' 'stage=base_bind_nonblocking_open_disabled'
+touch /etc/aorus-5090-allow-compute-load
+AORUS_5090_DISABLE_NONBLOCKING_OPEN=1 /usr/local/sbin/aorus-5090-compute-load-nvidia > "$base_bind_log" 2>&1
+bind_rc=$?
+rm -f /etc/aorus-5090-allow-compute-load
+
+/usr/local/sbin/aorus-5090-status > "$bind_status" 2>&1
+lspci -vv -s 04:00.0 > "$bar_after" 2>&1
+if [[ -r /proc/driver/nvidia/params ]]; then
+    cp /proc/driver/nvidia/params "$params_after"
+fi
+
+if [[ "$bind_rc" -ne 0 ]]; then
+    write_status 'nvml nonblockoff two-init test complete' "bind_rc=$bind_rc" 'first_nvml_rc=99' 'second_nvml_rc=99'
+    exit 99
+fi
+
+for module in nvidia_uvm nvidia_modeset nvidia_drm; do
+    if module_loaded "$module"; then
+        write_status 'nvml nonblockoff two-init test aborted' "reason=${module}_loaded_after_base_bind" "bind_rc=$bind_rc"
+        exit 93
+    fi
+done
+
+if ! grep -q 'NVIDIA nonblocking open was disabled' "$base_bind_log"; then
+    write_status 'nvml nonblockoff two-init test aborted' 'reason=nonblocking_open_loader_did_not_pass_param' "bind_rc=$bind_rc"
+    exit 94
+fi
+
+write_status 'nvml nonblockoff two-init test started' "bind_rc=$bind_rc" 'stage=before_first_nvml_init'
+timeout 60s env AORUS_NVML_IOCTL_LOG="$ioctl_log" LD_PRELOAD="$trace_so" \
+    python3 /root/aorus-5090-nvml-init-probe.py "$first_progress" > "$first_output" 2>&1
+first_nvml_rc=$?
+
+if [[ "$first_nvml_rc" -ne 0 ]]; then
+    capture_after_state
+    write_status 'nvml nonblockoff two-init test complete' "bind_rc=$bind_rc" "first_nvml_rc=$first_nvml_rc" 'second_nvml_rc=99'
+    exit "$first_nvml_rc"
+fi
+
+sleep 10
+
+write_status 'nvml nonblockoff two-init test started' "bind_rc=$bind_rc" "first_nvml_rc=$first_nvml_rc" 'stage=before_second_nvml_init'
+timeout 60s env AORUS_NVML_IOCTL_LOG="$ioctl_log" LD_PRELOAD="$trace_so" \
+    python3 /root/aorus-5090-nvml-init-probe.py "$second_progress" > "$second_output" 2>&1
+second_nvml_rc=$?
+
+capture_after_state
+write_status 'nvml nonblockoff two-init test complete' "bind_rc=$bind_rc" "first_nvml_rc=$first_nvml_rc" "second_nvml_rc=$second_nvml_rc"
+exit "$second_nvml_rc"

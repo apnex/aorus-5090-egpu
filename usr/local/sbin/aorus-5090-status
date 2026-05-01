@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# AORUS RTX 5090 eGPU operational health check.
+#
+# Reports everything load-bearing for the working state. Run any time to
+# confirm the eGPU stack is healthy:
+#
+#   - Boot args: thunderbolt.host_reset=false active
+#   - PCI: GPU and HDMI audio functions present
+#   - Modules: nvidia loaded, nvidia_drm absent (compute-only)
+#   - Driver bind: GPU bound to nvidia
+#   - BAR1: 32 GiB
+#   - Power: D0, no D3cold
+#   - Persistenced: running and holding /dev/nvidia0
+#   - DRM: only i915 visible (no NVIDIA DRM device)
+
+set -euo pipefail
+
+gpu_dev=""
+audio_dev=""
+
+for dev in /sys/bus/pci/devices/*; do
+    [[ -r "$dev/vendor" && -r "$dev/device" ]] || continue
+    if [[ "$(<"$dev/vendor")" == "0x10de" && "$(<"$dev/device")" == "0x2b85" ]]; then
+        gpu_dev="$dev"
+    fi
+    if [[ "$(<"$dev/vendor")" == "0x10de" && "$(<"$dev/device")" == "0x22e8" ]]; then
+        audio_dev="$dev"
+    fi
+done
+
+module_loaded() {
+    local name="$1"
+    local loaded_module
+    while read -r loaded_module _; do
+        [[ "$loaded_module" == "$name" ]] && return 0
+    done < /proc/modules
+    return 1
+}
+
+show_attr() {
+    local label="$1"
+    local path="$2"
+
+    if [[ -r "$path" ]]; then
+        printf '  %s: %s\n' "$label" "$(<"$path")"
+    else
+        printf '  %s: unavailable\n' "$label"
+    fi
+}
+
+show_driver() {
+    local dev="$1"
+    if [[ -L "$dev/driver" ]]; then
+        basename "$(readlink "$dev/driver")"
+    else
+        printf 'none'
+    fi
+}
+
+show_pci_function() {
+    local label="$1"
+    local dev="$2"
+
+    if [[ -z "$dev" ]]; then
+        printf '%s: not present\n' "$label"
+        return
+    fi
+
+    printf '%s: %s\n' "$label" "${dev##*/}"
+    printf '  driver: %s\n' "$(show_driver "$dev")"
+    show_attr power_state "$dev/power_state"
+    show_attr power_control "$dev/power/control"
+    show_attr d3cold_allowed "$dev/d3cold_allowed"
+    show_attr driver_override "$dev/driver_override"
+
+    if [[ "$label" == "GPU" && -r "$dev/resource" ]]; then
+        mapfile -t gpu_resources < "$dev/resource"
+        read -r bar0_start bar0_end _ <<< "${gpu_resources[0]}"
+        read -r bar1_start bar1_end _ <<< "${gpu_resources[1]}"
+        local bar1_size=$((bar1_end - bar1_start + 1))
+        local bar1_gib=$((bar1_size / 1024 / 1024 / 1024))
+        printf '  BAR0: %s-%s\n' "$bar0_start" "$bar0_end"
+        printf '  BAR1: %s-%s (%d GiB)\n' "$bar1_start" "$bar1_end" "$bar1_gib"
+        if [[ -r "$dev/resource1_resize" ]]; then
+            printf '  BAR1_resize_mask: %s\n' "$(<"$dev/resource1_resize")"
+        fi
+    fi
+}
+
+# Boot arg sanity check
+host_reset_param=/sys/module/thunderbolt/parameters/host_reset
+if [[ -r "$host_reset_param" && "$(<"$host_reset_param")" == "N" ]]; then
+    printf 'thunderbolt.host_reset: disabled (correct)\n'
+else
+    printf 'thunderbolt.host_reset: NOT disabled (boot args missing or wrong)\n'
+fi
+
+printf 'modules:\n'
+for module in nvidia nvidia_uvm nvidia_modeset nvidia_drm; do
+    if module_loaded "$module"; then
+        printf '  %s: loaded\n' "$module"
+    else
+        printf '  %s: unloaded\n' "$module"
+    fi
+done
+
+show_pci_function GPU "$gpu_dev"
+show_pci_function HDMI_audio "$audio_dev"
+
+# nvidia-persistenced status (load-bearing for repeatable nvidia-smi)
+printf 'nvidia-persistenced: '
+if pid_file=/var/run/nvidia-persistenced/nvidia-persistenced.pid && [[ -r "$pid_file" ]]; then
+    pid=$(<"$pid_file")
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        nvidia0_fds=$(ls -1 /proc/"$pid"/fd 2>/dev/null \
+            | xargs -I{} readlink /proc/"$pid"/fd/{} 2>/dev/null \
+            | grep -c '^/dev/nvidia0$' || true)
+        printf 'running (pid=%s, %s fds on /dev/nvidia0)\n' "$pid" "$nvidia0_fds"
+    else
+        printf 'pid file present but process not running (stale)\n'
+    fi
+else
+    printf 'NOT running (nvidia-smi will freeze on second invocation)\n'
+fi
+
+printf 'drm_cards:\n'
+cards_seen=0
+for card in /sys/class/drm/card*; do
+    [[ -e "$card" ]] || continue
+    case "${card##*/}" in
+        *-*) continue ;;
+    esac
+    cards_seen=1
+    if [[ -L "$card/device/driver" ]]; then
+        printf '  %s: %s\n' "${card##*/}" "$(basename "$(readlink "$card/device/driver")")"
+    else
+        printf '  %s: no-driver\n' "${card##*/}"
+    fi
+done
+
+if [[ "$cards_seen" -eq 0 ]]; then
+    printf '  none\n'
+fi

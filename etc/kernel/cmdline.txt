@@ -1,0 +1,40 @@
+# Reference copy of the kernel cmdline arguments required for AORUS RTX 5090 eGPU.
+# Apply with:
+#   sudo grubby --update-kernel=ALL --args="<args from this file, single line>"
+# Verify with:
+#   cat /proc/cmdline
+#
+# Active arguments:
+
+module_blacklist=nouveau,nova_core
+rd.driver.blacklist=nouveau,nova_core
+modprobe.blacklist=nouveau,nova_core
+pci=realloc,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0
+thunderbolt.host_reset=false
+
+# Why each is needed:
+#
+# module_blacklist / rd.driver.blacklist / modprobe.blacklist (3 forms of nouveau/nova_core)
+#   Defensive: prevent any path from loading nouveau / nova_core at any boot stage.
+#   Cheap to keep, expensive if nouveau ever loads alongside nvidia.
+#
+# pci=realloc,pcie_bus_perf
+#   Required for BAR0/BAR1 allocation on Thunderbolt-attached GPU. Without this,
+#   the kernel skips reallocating the eGPU's resources after Thunderbolt
+#   authorization, leaving BAR0 unassigned and the driver unable to bind.
+#
+# hpmmioprefsize=256M
+#   Caps prefetchable MMIO reservation per hotplug bridge window to 256 MiB.
+#   Prevents oversized reservations on empty downstream Thunderbolt ports from
+#   starving the actual GPU's bridge of resources.
+#
+# resource_alignment=35@0000:03:00.0
+#   Forces the occupied downstream Thunderbolt bridge (the one the GPU is on) to
+#   be reassigned with 32 GiB alignment, large enough for the RTX 5090's
+#   resizable BAR1.
+#
+# thunderbolt.host_reset=false  (THE KEY FIX)
+#   Without this, the kernel's Thunderbolt authorization path issues a host
+#   router reset that destroys the firmware/early-boot 32 GiB BAR1 layout,
+#   collapsing it to 256 MiB. This kills NVIDIA driver bind. With this flag,
+#   the firmware-assigned 32 GiB BAR1 survives Thunderbolt authorization.

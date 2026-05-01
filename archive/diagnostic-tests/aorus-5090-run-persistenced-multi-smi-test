@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -u
+
+prefix=/root/aorus-5090-persistenced-multi-smi
+status_file=${prefix}-status.txt
+pre_status=${prefix}-pre-status.txt
+bind_log=${prefix}-bind.log
+bind_status=${prefix}-bind-status.txt
+persistenced_log=${prefix}-persistenced.log
+persistenced_fds=${prefix}-persistenced-fds.txt
+smi_dir=${prefix}-smi
+post_status=${prefix}-post-status.txt
+kernel_log=${prefix}-kernel.log
+
+write_status() {
+    printf '%s\n' "$@" > "$status_file"
+    sync -f "$status_file" 2>/dev/null || sync
+}
+
+mark() {
+    printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$status_file"
+    sync -f "$status_file" 2>/dev/null || sync
+}
+
+module_loaded() {
+    local name="$1"
+    local loaded_module
+    while read -r loaded_module _; do
+        [[ "$loaded_module" == "$name" ]] && return 0
+    done < /proc/modules
+    return 1
+}
+
+cleanup() {
+    if [[ -n "${persistenced_pid:-}" ]] && kill -0 "$persistenced_pid" 2>/dev/null; then
+        kill -TERM "$persistenced_pid" 2>/dev/null
+    fi
+}
+
+rm -rf "$smi_dir"
+mkdir -p "$smi_dir"
+rm -f "$status_file" "$pre_status" "$bind_log" "$bind_status" \
+      "$persistenced_log" "$persistenced_fds" "$post_status" "$kernel_log"
+
+write_status 'persistenced multi-smi test started' 'stage=precheck'
+
+if [[ "$(< /sys/module/thunderbolt/parameters/host_reset)" != "N" ]]; then
+    mark 'aborted reason=host_reset_not_disabled'
+    exit 92
+fi
+
+for module in nvidia nvidia_uvm nvidia_modeset nvidia_drm; do
+    if module_loaded "$module"; then
+        /usr/local/bin/aorus-5090-status > "$pre_status" 2>&1
+        mark "aborted reason=${module}_already_loaded"
+        exit 90
+    fi
+done
+
+if pgrep -x nvidia-persistenced >/dev/null; then
+    mark 'aborted reason=persistenced_already_running'
+    exit 91
+fi
+
+/usr/local/bin/aorus-5090-status > "$pre_status" 2>&1
+
+mark 'stage=base_bind'
+touch /etc/aorus-5090-allow-compute-load
+/usr/local/sbin/aorus-5090-compute-load-nvidia > "$bind_log" 2>&1
+bind_rc=$?
+rm -f /etc/aorus-5090-allow-compute-load
+/usr/local/bin/aorus-5090-status > "$bind_status" 2>&1
+
+if [[ "$bind_rc" -ne 0 ]]; then
+    mark "aborted reason=bind_failed bind_rc=$bind_rc"
+    exit 99
+fi
+
+mark "bind_rc=$bind_rc stage=start_persistenced"
+nvidia-persistenced --verbose > "$persistenced_log" 2>&1 &
+persistenced_pid=$!
+trap cleanup EXIT
+
+sleep 3
+
+if ! kill -0 "$persistenced_pid" 2>/dev/null; then
+    mark "aborted reason=persistenced_died_early persistenced_pid=$persistenced_pid"
+    exit 93
+fi
+
+ls -la /proc/"$persistenced_pid"/fd/ > "$persistenced_fds" 2>&1
+
+if ! grep -q '/dev/nvidia0' "$persistenced_fds"; then
+    mark "aborted reason=persistenced_did_not_open_nvidia0"
+    cat "$persistenced_log" >> "$status_file"
+    exit 94
+fi
+
+mark "persistenced_pid=$persistenced_pid stage=smi_loop"
+
+declare -a smi_rc=()
+for i in 1 2 3 4 5; do
+    mark "stage=smi_invocation_${i}_before"
+    timeout 30s nvidia-smi > "$smi_dir/smi-${i}.txt" 2>&1
+    rc=$?
+    mark "stage=smi_invocation_${i}_after rc=${rc}"
+    smi_rc+=("${rc}")
+
+    if [[ "$rc" -ne 0 ]]; then
+        break
+    fi
+
+    sleep 2
+done
+
+mark 'stage=idle_60s_then_one_more'
+sleep 60
+mark 'stage=smi_after_idle_before'
+timeout 30s nvidia-smi > "$smi_dir/smi-after-idle.txt" 2>&1
+idle_rc=$?
+mark "stage=smi_after_idle_after rc=${idle_rc}"
+smi_rc+=("${idle_rc}")
+
+/usr/local/bin/aorus-5090-status > "$post_status" 2>&1
+journalctl -k -b --no-pager -g 'NVRM|Xid|nvidia|nvidia_uvm|nvidia_drm|NVML|AER|PCIe Bus Error|fallen off|GPU has fallen|GSP|NV_ERR|BUG|Oops|panic|lockup|hung|watchdog' > "$kernel_log" 2>&1
+
+mark "stage=complete bind_rc=${bind_rc} smi_rcs=${smi_rc[*]}"
+echo "Test complete. smi return codes: ${smi_rc[*]}"
+echo "Persistenced still running with PID $persistenced_pid (cleanup will TERM it on exit)."
+exit 0
