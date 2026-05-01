@@ -97,9 +97,9 @@ else
 fi
 
 if mod_loaded nvidia_uvm; then
-    info "nvidia_uvm: loaded (auto-loads on first CUDA use; not required at idle)"
+    ok "nvidia_uvm: loaded (pre-staged for CUDA)"
 else
-    info "nvidia_uvm: unloaded (will load on first CUDA use)"
+    fail "nvidia_uvm: NOT loaded (cuInit will try to load it, which is blocked - failed cuInit can kernel-panic the host)"
 fi
 
 # -------------------------------------------------------- 3. config files --
