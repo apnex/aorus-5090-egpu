@@ -106,7 +106,8 @@ fi
 section "3. Configuration files (content match against repo)"
 
 check_file_match() {
-    local repo_file="$1" sys_file="$2"
+    local repo_rel="$1" sys_file="$2"
+    local repo_file="${repo_root}/${repo_rel}"
     if [[ ! -e "$sys_file" ]]; then
         fail "$sys_file missing"
     elif cmp -s "$repo_file" "$sys_file"; then
