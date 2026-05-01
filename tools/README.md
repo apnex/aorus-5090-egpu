@@ -52,16 +52,73 @@ The `nohup setsid ... &` + `disown` detaches the script from the calling shell s
 
 If anything hangs, switch to `Ctrl+Alt+F2`, login, and run `sudo systemctl isolate graphical.target` to recover manually.
 
+## `pytorch-cuda-smoke-test.py`
+
+PyTorch CUDA smoke test. Validates the path that vLLM actually uses:
+
+```
+import torch -> torch.cuda.is_available -> device_count / get_device_name ->
+torch.ones() on cuda -> torch.mm() (cuBLAS GEMM) -> torch.cuda.synchronize ->
+deterministic correctness check (every element of result == 1024.0)
+```
+
+Reports `torch_version`, `torch_cuda_version`, `compute_capability`, and post-test memory stats. Exits 0 with `pytorch_smoke=pass` on success.
+
+Requires `torch` installed in a venv. Setup once:
+
+```bash
+python3 -m venv /root/torch-test
+/root/torch-test/bin/pip install --upgrade pip
+/root/torch-test/bin/pip install torch
+```
+
+This downloads ~3 GB of PyTorch + CUDA runtime wheels. Takes 5-10 minutes depending on bandwidth.
+
+Run directly (after venv setup):
+
+```bash
+/root/torch-test/bin/python3 tools/pytorch-cuda-smoke-test.py
+```
+
+WARNING: same precondition as the CUDA Driver API test - `nvidia_uvm` must be loaded. The TTY runner (`tty-pytorch-test.sh`) checks this before invoking the test.
+
+## `tty-pytorch-test.sh`
+
+TTY-with-fsync runner for the PyTorch smoke. Same methodology as `tty-cuda-test.sh`:
+
+1. Pre-flight: `nvidia_uvm` loaded, `nvidia-persistenced.service` active, venv exists, `torch` importable.
+2. Capture pre-test state (status, modules, `nvidia-smi`).
+3. Run `pytorch-cuda-smoke-test.py` from the venv with a 60 s timeout.
+4. Capture post-test state.
+5. Idle 30 s for delayed-panic detection.
+6. EXIT trap restores `graphical.target`.
+
+Output: `/root/aorus-pytorch-tty-test/`.
+
+To launch:
+
+```bash
+nohup setsid /root/aorus-5090-gpu/tools/tty-pytorch-test.sh </dev/null >/dev/null 2>&1 &
+disown
+sleep 1
+sudo systemctl isolate multi-user.target
+```
+
+Configurable via env vars:
+
+- `VENV_PATH` (default `/root/torch-test`)
+- `TEST_SCRIPT` (default `/root/aorus-5090-gpu/tools/pytorch-cuda-smoke-test.py`)
+- `OUT` (default `/root/aorus-pytorch-tty-test`)
+
 ## Future tools
 
 This directory is the right place for:
 
-- A PyTorch tensor-op smoke test (next step toward vLLM)
-- A vLLM warmup test
-- An `NVreg_DynamicPowerManagement=0` experiment (see `docs/future-investigations.md`)
-- A kernel/driver-update validation runner
+- A vLLM warmup test (next step after PyTorch is validated).
+- An `NVreg_DynamicPowerManagement=0` experiment (see `docs/future-investigations.md`).
+- A kernel/driver-update validation runner.
 
-Each tool should follow the same pattern as `tty-cuda-test.sh`:
+Each tool should follow the same pattern as `tty-cuda-test.sh` / `tty-pytorch-test.sh`:
 - Refuse to start if preconditions are not met.
 - fsync progress markers.
 - Capture pre- and post-test state.
