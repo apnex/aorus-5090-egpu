@@ -112,6 +112,47 @@ A separate bug, also reproducible without further freezes (we have the kernel lo
 
 This bug is filed against the same repo and is potentially related to Bug A in that both involve poorly-handled error paths in driver init/teardown on this platform.
 
+### Bug C: NCCL communicator init takes the GPU off the bus on Blackwell over Thunderbolt
+
+Identified during vLLM 0.20.0 bring-up attempts (2026-05-01). Reproducer requires vLLM but the trigger is at the PyTorch / NCCL layer.
+
+**Title (suggested):** `torch.distributed.init_process_group(backend='nccl', world_size=1)` causes `NV_ERR_GPU_IS_LOST` and host hard-lock on RTX 5090 over Thunderbolt 4 with open kernel module 580.142
+
+**Body outline:**
+
+- Hardware / kernel / driver: as Bug A.
+- Reproducer (any vLLM 0.20.0 invocation, but minimal:
+
+  ```python
+  # in /root/vllm-venv with vllm 0.20.0 and torch 2.11.0+cu130 installed
+  import os
+  os.environ['MASTER_ADDR']='127.0.0.1'
+  os.environ['MASTER_PORT']='29500'
+  import torch.distributed as dist
+  dist.init_process_group(backend='nccl', init_method='env://',
+                          world_size=1, rank=0)
+  # host hard-locks within ~1 second of this call
+  ```
+
+- Kernel log captured before the freeze:
+
+  ```
+  NVRM: GPU lost from the bus [NV_ERR_GPU_IS_LOST] (0x0000000F)
+  NVRM: rpcSendMessage failed (multiple, sequences 1310-1318, fn 78)
+  NVRM: rpcRmApiFree_GSP: GspRmFree failed
+  pcieport 0000:00:07.0: AER: Multiple Uncorrectable (Non-Fatal) error
+    message received from 0000:04:00.0
+  ```
+
+- `NCCL_P2P_DISABLE=1`, `NCCL_SHM_DISABLE=1`, and vLLM's `--disable-custom-all-reduce` do NOT prevent the freeze; the trigger is in the basic NCCL communicator init, not in P2P probing or shared-memory transport.
+- Workaround: pre-initialize `torch.distributed` with the `gloo` (CPU) backend before vLLM gets to call `init_process_group`. vLLM checks `torch.distributed.is_initialized()` and skips its own init when one already exists. At `world_size=1` no actual collective ops execute. See `/root/vllm/tools/vllm-gloo-preinit.py` for a working wrapper.
+- This workaround gets past the NCCL-init freeze and into vLLM model loading (model successfully placed in VRAM), but a *second* freeze hits later in vLLM's profile run / first-kernel JIT phase. The second freeze is presumed to be the same `sm_120` Triton-JIT-over-TB pattern that `CUDA_MODULE_LOADING=EAGER` partially mitigates in other contexts (where it instead causes an indefinite CPU spin in EngineCore init).
+
+**Attachments:**
+
+- `/root/vllm/archive/vllm-attempts-2026-05-01/` — captured logs from each freeze configuration including the gloo-preinit run that successfully bypassed the NCCL freeze.
+- `/root/vllm/tools/vllm-gloo-preinit.py` — a 30-line reproducer of the workaround.
+
 ## 3. Try kernel 6.20+ when available
 
 Recent (2025-2026) Linux kernel work on Thunderbolt power management and PCIe authorization is ongoing. The same bug may have been fixed upstream after 6.19. If a newer kernel becomes available on Fedora 42 (or after a Fedora 43 upgrade), retest:
