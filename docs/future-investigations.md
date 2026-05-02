@@ -310,3 +310,146 @@ where it currently freezes the host. What it DOES do:
 - Gives us a vendor-blessed config to point at when filing the NVIDIA bug.
 - Lets us A/B test open vs closed RM cleanly.
 - Reduces our maintenance surface significantly.
+
+### Postscript: what we actually executed (2026-05-02 evening)
+
+We ran the migration plan above. Outcomes:
+
+1. F42 -> F43 system upgrade succeeded (1m 18s download, ~25 min apply).
+   Lesson: `dnf system-upgrade` rebuilt the BLS bootloader entries from
+   `/etc/kernel/cmdline` template, which had not been kept in sync with
+   our grubby-applied args. **All boot args were lost on the upgrade.**
+   Resolution: we re-applied via grubby and now also write
+   `/etc/kernel/cmdline` to keep both in sync.
+
+2. NVIDIA CUDA repo + `nvidia-driver-assistant --install --module-flavor
+   open` was the wrong abstraction. **The assistant only knows the
+   desktop meta-packages.** It installed `nvidia-open`, which pulls in
+   the desktop superset (X drivers, Vulkan/EGL/OpenCL ICDs, libXNVCtrl,
+   FBC, settings). We spent hours re-applying our Layer-2 hardening on
+   top of that.
+
+   **The correct command (per the NVIDIA Fedora install guide we
+   discovered too late) is:**
+
+   ```
+   sudo dnf install nvidia-driver-cuda kmod-nvidia-open-dkms
+   ```
+
+   That is the documented compute-only-and-open-module install. It
+   excludes the desktop layer entirely. The driver-assistant has no
+   compute-only flag; it should not be used for our purpose.
+
+   The `recommended-install-path.md` in this directory captures the
+   correct sequence as a clean reference for future installs.
+
+3. Several NVIDIA-CUDA-repo RPMs failed `%post` scriptlets due to
+   missing `mkinitrd` (Fedora ships dracut, scriptlets assume mkinitrd).
+   Recovery: we manually ran `dkms add/build/install` and reinstalled
+   `nvidia-persistenced`. This is a packaging defect on NVIDIA's side,
+   filing-quality.
+
+4. `nvidia-persistenced` on the new install runs as a dedicated user
+   (UID 967), unlike F42 RPMFusion which ran as root. Without group
+   membership in our 0660-root:ollama'd /dev/nvidia0, it fails to start.
+   apply.sh now adds nvidia-persistenced to the ollama group; status.sh
+   now checks the membership.
+
+5. `/usr/lib/modprobe.d/nvidia.conf` ships a `softdep nvidia post:
+   nvidia-uvm nvidia-drm` that auto-loads nvidia-drm.ko, creating a
+   /dev/dri/cardN that GNOME mutter picks up at login -> deterministic
+   freeze. We shadow with `/etc/modprobe.d/nvidia.conf` to remove the
+   softdep. The shadow also flips two NVreg defaults the vendor file
+   set to compute-incompatible values.
+
+6. **The freeze bug persists.** Driver 595.71.05 + F43 + open kernel
+   module + all hardening still freezes within 30 seconds of ollama's
+   discovery dance completing - no inference required, no further
+   user actions. Same silent-hang fingerprint as on F42 + 580.142.
+   Conclusion: the bug is in the driver / GSP firmware / hardware path,
+   not in the userspace exposure we have been hardening against.
+
+   We have eliminated everything userspace can eliminate. Further
+   investigation moves to the open-gpu-kernel-modules GitHub repo
+   (section 9 below) or to filing an upstream bug.
+
+## 9. Review the open-gpu-kernel-modules GitHub repo (parked)
+
+The NVIDIA open kernel modules are genuinely open source under MIT/GPLv2:
+**https://github.com/NVIDIA/open-gpu-kernel-modules**
+
+What's open vs closed:
+
+- Open: kernel module sources (`nvidia.ko`, `nvidia-uvm.ko`,
+  `nvidia-modeset.ko`, `nvidia-drm.ko`, `nvidia-peermem.ko`)
+- Closed: userspace libraries (libcuda, libnvidia-ml, etc.) - binary
+  blobs
+- **Closed: GSP firmware** (`gsp_*.bin` files in
+  `/usr/lib/firmware/nvidia/`) - runs on the GPU's onboard ARM core.
+  On Blackwell, much of what historically lived in the kernel module
+  was moved into firmware. The kernel module is largely an RPC stub
+  for many operations, including possibly the close-path teardown that
+  bites us. So even with the open kernel module source, the actual
+  buggy logic may live in closed firmware that we cannot read.
+
+### What to do with the repo
+
+**Tier 1 - search the issue tracker.** Queries that map to our
+symptoms:
+
+- `"Xid 79"` (the GPU-fallen-off-bus we captured)
+- `"GPU has fallen off the bus"`
+- `Thunderbolt eGPU` (variants: `external GPU`, `egpu`)
+- `Blackwell` + `freeze` / `hang` / `lost`
+- `RTX 5090` + `freeze` / `hang`
+- `GB202`
+- `_issueRpcAndWait` + `failed`
+- `kgspRcAndNotifyAllChannels`
+- `ollama` + freeze (community reports)
+- `compute-only` + Thunderbolt
+
+If a similar issue exists, status / workaround / planned fix may already
+be there.
+
+**Tier 2 - file a new issue with our evidence.** What we have:
+
+- Multiple silent-hang freezes with consistent fingerprint
+- One captured Xid 79 with full RPC error chain
+  (`/root/aorus-5090-gpu/archive/xid79-disconnect-2026-05-02/`)
+- Reproduces on F42 + 580.142 RPMFusion
+- Reproduces on F43 + 595.71.05 NVIDIA-CUDA-repo open kernel module
+- All known peripheral mitigations applied (compute-only install,
+  ICDs disabled, persistenced + UVM keep-alive, NVreg tuning)
+- Hardware: NUC 15 Pro+ + AORUS RTX 5090 AI Box over Thunderbolt 4
+
+A bug filed against this repo is the right escalation path: it goes
+directly to the maintainers of the kernel module code.
+
+**Tier 3 - browse the source.** Files of interest in
+`kernel-open/nvidia/` and `kernel-open/nvidia-uvm/`:
+
+- `file_operations` structs - `release` callbacks are where close-path
+  teardown runs
+- `_issueRpcAndWait` - shows up in our Xid 79 capture; find the
+  surrounding context for what RPC was attempted
+- `kgspRcAndNotifyAllChannels` - same
+- Diff between the v580.142 and v595.71.05 tags - if the bug was
+  patched between releases we should see the relevant change; if not,
+  that is evidence the bug persists in 595
+
+### Why parked
+
+The current platform-repo work (refit for the documented compute-only
+install path, and possibly the closed-RM A/B test) has clear next steps
+and we have momentum on it. The GitHub investigation is open-ended and
+could consume significant time without a guaranteed return. Park until:
+
+- The current refit is complete (recommended-install-path.md captures
+  the destination)
+- We have made or explicitly declined the closed-RM A/B test (task #37)
+- We are ready to either accept the bug as upstream-only-fixable or
+  make a pivot decision (different hardware, different driver path)
+
+When we resume: start with Tier 1 (search the issue tracker). If a
+matching issue exists, no further action needed beyond following along.
+If not, proceed to Tier 2 (file the bug) before Tier 3 (read source).
