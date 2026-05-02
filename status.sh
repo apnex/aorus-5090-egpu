@@ -524,6 +524,79 @@ if [[ -d /dev/nvidia-caps ]]; then
     done
 fi
 
+# ---------------------------- 8f. NVreg runtime params vs configured -------
+section "8f. NVIDIA driver module parameters (runtime vs configured)"
+
+# NVreg_* options in modprobe.d are read by the nvidia kernel module at
+# insmod time. Most are exposed via /sys/module/nvidia/parameters/ so we
+# can verify the running driver actually picked them up. A few (like
+# NVreg_DeviceFile{UID,GID,Mode}) aren't exposed in sysfs - they are
+# consumed by libnvidia-modprobe-utils at file-creation time, not stored
+# as runtime state. We INFO those (cannot verify) rather than fail.
+#
+# Mismatch between conf and runtime usually means the conf changed but
+# the driver wasn't reloaded - i.e. reboot needed.
+
+modconf=/etc/modprobe.d/aorus-5090-compute-only.conf
+if [[ -r "$modconf" ]]; then
+    # Extract every "options nvidia K=V K=V ..." pair. awk strips comments
+    # and prints one K=V token per line.
+    nvreg_pairs=$(awk '
+        /^[[:space:]]*#/ {next}
+        /^[[:space:]]*options[[:space:]]+nvidia[[:space:]]/ {
+            for (i=3; i<=NF; i++) print $i
+        }
+    ' "$modconf")
+
+    # Match conf value to runtime value: either equal as strings, or equal
+    # as integers (so 0x00 matches 0). Returns 0 on match, 1 otherwise.
+    match_nvreg() {
+        local actual="$1" expected="$2"
+        [[ "$actual" == "$expected" ]] && return 0
+        # Only attempt arithmetic comparison if both look numeric
+        if [[ "$actual" =~ ^-?(0x)?[0-9a-fA-F]+$ ]] \
+                && [[ "$expected" =~ ^-?(0x)?[0-9a-fA-F]+$ ]]; then
+            (( actual == expected )) && return 0
+        fi
+        return 1
+    }
+
+    # NVIDIA doesn't expose params via /sys/module/nvidia/parameters/ but
+    # mirrors them in /proc/driver/nvidia/params with the NVreg_ prefix
+    # stripped. A few have different internal names (e.g.,
+    # NVreg_RestrictProfilingToAdminUsers -> RmProfilingAdminOnly); for
+    # those we INFO that we can't directly verify.
+    proc_params=/proc/driver/nvidia/params
+
+    while IFS= read -r kv; do
+        [[ -n "$kv" ]] || continue
+        key="${kv%%=*}"
+        val="${kv#*=}"
+        [[ "$key" =~ ^NVreg_ ]] || continue
+        # Most NVreg_X are mirrored in /proc as plain X (no NVreg_ prefix).
+        # A few are renamed internally; map the known ones explicitly.
+        case "$key" in
+            NVreg_RestrictProfilingToAdminUsers) proc_key="RmProfilingAdminOnly" ;;
+            *) proc_key="${key#NVreg_}" ;;
+        esac
+        actual=""
+        if [[ -r "$proc_params" ]]; then
+            actual=$(awk -v k="${proc_key}:" '$1 == k {print $2; exit}' "$proc_params")
+        fi
+        if [[ -n "$actual" ]]; then
+            if match_nvreg "$actual" "$val"; then
+                ok "$key = $actual (matches conf $val)"
+            else
+                fail "$key = $actual at runtime; conf has $val (reboot to reload nvidia with new params)"
+            fi
+        else
+            info "$key (conf=$val): not in /proc/driver/nvidia/params - cannot verify (renamed internally or insmod-only)"
+        fi
+    done <<< "$nvreg_pairs"
+else
+    warn "$modconf not present - cannot verify NVreg runtime parameters"
+fi
+
 # --------------------------------------- 8e. exclusivity (lsof check) ------
 section "8e. /dev/nvidia* exclusivity (only authorised processes holding)"
 
