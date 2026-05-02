@@ -483,8 +483,22 @@ if [[ -r "$modconf" ]]; then
     fi
 fi
 
+# check_dev_perms supports two severities:
+#   fail (default) - for nvidia0 / nvidiactl, where NVreg_DeviceFile* in
+#     modprobe.d makes perms persist through nvidia-modprobe re-runs.
+#     Loss-of-perms here means NVreg or apply.sh is broken.
+#   warn - for /dev/nvidia-uvm, -uvm-tools, and nvidia-caps/*. The
+#     nvidia_uvm module has NO equivalent of NVreg_DeviceFile* (verified
+#     via 'modinfo nvidia_uvm'), so nvidia-modprobe will reset their
+#     perms to 0666 root:root after every invocation (every nvidia-smi
+#     call, every libnvidia-ml init, etc.). Loader chmod converges them
+#     at boot but the next nvidia-modprobe wins. Layer 4 (8e exclusivity)
+#     is the actual safety net for these devices: lsof confirms nothing
+#     unauthorised is opening them, regardless of mode bits. The keep-
+#     alive holds them via fd, so kernel ref count stays >= 1.
 check_dev_perms() {
     local dev="$1"
+    local severity="${2:-fail}"
     if [[ ! -e "$dev" ]]; then
         info "$dev: not present"
         return
@@ -494,17 +508,19 @@ check_dev_perms() {
     group=$(stat -c '%G' "$dev")
     if [[ "$mode" == "660" && "$group" == "ollama" ]]; then
         ok "$dev: 0660 root:ollama"
+    elif [[ "$severity" == "warn" ]]; then
+        warn "$dev: 0$mode root:$group (no NVreg-equivalent for nvidia_uvm; resets after every nvidia-modprobe; Layer 4 8e is the real safety check)"
     else
-        fail "$dev: 0$mode root:$group (want 0660 root:ollama; udev rule + reboot or apply.sh to converge)"
+        fail "$dev: 0$mode root:$group (want 0660 root:ollama; NVreg_DeviceFile* in modprobe.d should make this stick)"
     fi
 }
-check_dev_perms /dev/nvidia0
-check_dev_perms /dev/nvidiactl
-check_dev_perms /dev/nvidia-uvm
-check_dev_perms /dev/nvidia-uvm-tools
+check_dev_perms /dev/nvidia0           fail
+check_dev_perms /dev/nvidiactl         fail
+check_dev_perms /dev/nvidia-uvm        warn
+check_dev_perms /dev/nvidia-uvm-tools  warn
 if [[ -d /dev/nvidia-caps ]]; then
     for cap in /dev/nvidia-caps/*; do
-        check_dev_perms "$cap"
+        check_dev_perms "$cap" warn
     done
 fi
 
