@@ -31,7 +31,7 @@ if ! grep -q 'thunderbolt.host_reset=false' /proc/cmdline; then
     yellow "WARNING: 'thunderbolt.host_reset=false' is NOT in /proc/cmdline."
     yellow "The eGPU likely has BAR1=256MiB rather than 32GiB. Boot args are required."
     yellow "After this script finishes, run:"
-    yellow "  sudo grubby --update-kernel=ALL --args=\"thunderbolt.host_reset=false pci=realloc,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0 module_blacklist=nouveau,nova_core rd.driver.blacklist=nouveau,nova_core modprobe.blacklist=nouveau,nova_core iommu=pt\""
+    yellow "  sudo grubby --update-kernel=ALL --args=\"thunderbolt.host_reset=false pci=realloc=off,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0 module_blacklist=nouveau,nova_core rd.driver.blacklist=nouveau,nova_core modprobe.blacklist=nouveau,nova_core iommu=pt\""
     yellow "Then reboot before relying on the rest of the configuration."
 elif ! grep -q 'iommu=pt' /proc/cmdline; then
     yellow "NOTICE: 'iommu=pt' is NOT in /proc/cmdline."
@@ -172,38 +172,21 @@ step "reload systemd, mask/disable/enable services"
 
 systemctl daemon-reload
 
-# nvidia-fallback should be masked (loads nouveau on NVIDIA failure - fights us).
-if [[ "$(systemctl is-enabled nvidia-fallback.service 2>&1)" != "masked" ]]; then
-    systemctl mask nvidia-fallback.service
-    printf '  masked: nvidia-fallback.service\n'
-fi
-
-# nvidia-powerd: opens/closes device files at runtime, which is exactly
-# the close-path-bug trigger we work hard to prevent. Mask so it cannot
-# start. On a compute-only install via the NVIDIA CUDA repo, nvidia-powerd
-# is not installed at all (the desktop meta-package nvidia-driver provided
-# it) - mask_unit_robust handles the 'not installed' case as a no-op.
-mask_unit_robust nvidia-powerd.service
-
-# Compute-only mode: mask GPU-touching system services that are pointless
-# on this host. Each is a potential close-path-bug trigger if it dlopens
-# libnvidia-ml or opens /dev/nvidia* during its lifecycle.
-#
-#   switcheroo-control.service - shipped in /usr/lib/, standard mask works.
-#                                 Manages display GPU switching for laptops
-#                                 with hybrid graphics; we are compute-only.
-#   nvidia-cdi-refresh.path    - shipped DIRECTLY in /etc/systemd/system/ by
-#                                 nvidia-container-toolkit RPM. systemctl
-#                                 mask refuses ("File already exists"); we
-#                                 rename the original aside and symlink
-#                                 /dev/null in its place. Same effect.
-#                                 The .path watches modules.dep + nvidia-ctk
-#                                 and triggers .service to dlopen libnvml.
+# Robust masker. Handles three cases:
+#   - already masked (no-op)
+#   - not installed at all (no-op; expected on compute-only when desktop
+#     meta-package or nvidia-container-toolkit are not present)
+#   - shipped from /etc/ as a regular file (rename + /dev/null symlink, since
+#     `systemctl mask` refuses "File already exists")
+#   - shipped from /usr/lib/ (standard mask works)
 mask_unit_robust() {
     local unit="$1"
     local etc_path="/etc/systemd/system/$unit"
     local enabled
-    enabled=$(systemctl is-enabled "$unit" 2>&1)
+    # systemctl is-enabled returns non-zero for masked/disabled/not-found,
+    # which would trip set -e on the assignment. Suppress the rc; we read
+    # the captured output to dispatch.
+    enabled=$(systemctl is-enabled "$unit" 2>&1) || true
     if [[ "$enabled" == "masked" ]]; then
         printf '  already masked: %s\n' "$unit"
         return 0
@@ -232,6 +215,30 @@ mask_unit_robust() {
     return 1
 }
 
+# nvidia-fallback should be masked (loads nouveau on NVIDIA failure - fights us).
+mask_unit_robust nvidia-fallback.service
+
+# nvidia-powerd: opens/closes device files at runtime, which is exactly
+# the close-path-bug trigger we work hard to prevent. On a compute-only
+# install via the NVIDIA CUDA repo, nvidia-powerd is not installed at all
+# (the desktop meta-package nvidia-driver provided it) - mask_unit_robust
+# handles the 'not installed' case as a no-op.
+mask_unit_robust nvidia-powerd.service
+
+# Compute-only mode: mask GPU-touching system services that are pointless
+# on this host. Each is a potential close-path-bug trigger if it dlopens
+# libnvidia-ml or opens /dev/nvidia* during its lifecycle.
+#
+#   switcheroo-control.service - shipped in /usr/lib/, standard mask works.
+#                                Manages display GPU switching for laptops
+#                                with hybrid graphics; we are compute-only.
+#   nvidia-cdi-refresh.path    - shipped DIRECTLY in /etc/systemd/system/ by
+#                                nvidia-container-toolkit RPM. systemctl
+#                                mask refuses ("File already exists"); we
+#                                rename the original aside and symlink
+#                                /dev/null in its place. Same effect.
+#                                The .path watches modules.dep + nvidia-ctk
+#                                and triggers .service to dlopen libnvml.
 mask_unit_robust switcheroo-control.service
 mask_unit_robust nvidia-cdi-refresh.path
 mask_unit_robust nvidia-cdi-refresh.service
