@@ -45,7 +45,7 @@ check_arg_in_cmdline() {
 section "1. Boot arguments (/proc/cmdline)"
 
 check_arg_in_cmdline 'thunderbolt.host_reset=false'
-check_arg_in_cmdline 'pci=realloc,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0'
+check_arg_in_cmdline 'pci=realloc=off,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0'
 check_arg_in_cmdline 'module_blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'rd.driver.blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'modprobe.blacklist=nouveau,nova_core'
