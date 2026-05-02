@@ -43,6 +43,44 @@ if systemctl is-active aorus-5090-compute-load-nvidia.service >/dev/null 2>&1; t
 fi
 systemctl disable aorus-5090-compute-load-nvidia.service >/dev/null 2>&1 || true
 
+# Unmask the compute-only-mode services we masked in apply.sh.
+unmask_unit_robust() {
+    local unit="$1"
+    local etc_path="/etc/systemd/system/$unit"
+    # If we did a rename+symlink mask, undo: remove symlink, restore file.
+    if [[ -L "$etc_path" ]] && [[ "$(readlink "$etc_path")" == "/dev/null" ]]; then
+        rm -f "$etc_path"
+        if [[ -f "$etc_path.aorus-disabled" ]]; then
+            mv "$etc_path.aorus-disabled" "$etc_path"
+        fi
+        printf '  unmasked (restored from rename): %s\n' "$unit"
+        return
+    fi
+    # Standard unmask path.
+    if [[ "$(systemctl is-enabled "$unit" 2>&1)" == "masked" ]]; then
+        systemctl unmask "$unit" >/dev/null 2>&1 || true
+        printf '  unmasked: %s\n' "$unit"
+    fi
+}
+
+unmask_unit_robust switcheroo-control.service
+unmask_unit_robust nvidia-cdi-refresh.path
+unmask_unit_robust nvidia-cdi-refresh.service
+systemctl daemon-reload
+
+# Re-enable NVIDIA Vulkan / EGL / OpenCL loader entries by undoing the rename.
+restore_loader_entry() {
+    local dst="$1"
+    if [[ -f "$dst.aorus-disabled" ]]; then
+        mv "$dst.aorus-disabled" "$dst"
+        printf '  restored: %s\n' "$dst"
+    fi
+}
+restore_loader_entry /usr/share/vulkan/icd.d/nvidia_icd.x86_64.json
+restore_loader_entry /usr/share/vulkan/implicit_layer.d/nvidia_layers.json
+restore_loader_entry /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+restore_loader_entry /etc/OpenCL/vendors/nvidia.icd
+
 step "remove configuration files"
 
 remove_if_exists() {
@@ -62,6 +100,7 @@ remove_if_exists /etc/systemd/system/aorus-5090-uvm-keepalive.service
 # udev / modprobe / scripts
 remove_if_exists /etc/udev/rules.d/79-aorus-5090-no-autoload.rules
 remove_if_exists /etc/udev/rules.d/81-aorus-5090-compute-power.rules
+remove_if_exists /etc/udev/rules.d/82-aorus-5090-nvidia-permissions.rules
 remove_if_exists /etc/modprobe.d/aorus-5090-compute-only.conf
 remove_if_exists /etc/modprobe.d/blacklist-nouveau.conf
 remove_if_exists /usr/local/sbin/aorus-5090-compute-load-nvidia

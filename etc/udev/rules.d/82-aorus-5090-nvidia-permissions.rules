@@ -1,0 +1,23 @@
+# Restrict /dev/nvidia* to root and the 'ollama' group.
+#
+# Compute-only mode means the eGPU is exclusively a CUDA accelerator; no
+# system / user-session process should be opening the device files. NVIDIA's
+# default udev rules set them 0666 (world rw), which lets gnome-shell,
+# mutter, ptyxis, PackageKit, dnf and any other process incidentally open
+# them via dlopen of libGLX_nvidia / libEGL_nvidia / libnvidia-opencl.
+# Each such open + close is a potential close-path bug trigger.
+#
+# Tightening to 0660 root:ollama means only:
+#   - nvidia-persistenced (root)              - must keep /dev/nvidia0 + /dev/nvidiactl open
+#   - aorus-5090-uvm-keepalive (root)         - must keep /dev/nvidia-uvm + -uvm-tools open
+#   - ollama.service (User=ollama)            - the actual compute consumer
+#   - admin users in the ollama group         - for nvidia-smi / diagnostic access
+#
+# Anything else gets EACCES on open() and the close-path can't fire because
+# the device was never opened.
+
+KERNEL=="nvidia0",          MODE="0660", GROUP="ollama"
+KERNEL=="nvidiactl",        MODE="0660", GROUP="ollama"
+KERNEL=="nvidia-uvm",       MODE="0660", GROUP="ollama"
+KERNEL=="nvidia-uvm-tools", MODE="0660", GROUP="ollama"
+KERNEL=="nvidia-cap*",      MODE="0660", GROUP="ollama"

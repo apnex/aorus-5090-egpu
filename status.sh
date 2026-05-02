@@ -121,6 +121,8 @@ check_file_match etc/udev/rules.d/79-aorus-5090-no-autoload.rules \
                  /etc/udev/rules.d/79-aorus-5090-no-autoload.rules
 check_file_match etc/udev/rules.d/81-aorus-5090-compute-power.rules \
                  /etc/udev/rules.d/81-aorus-5090-compute-power.rules
+check_file_match etc/udev/rules.d/82-aorus-5090-nvidia-permissions.rules \
+                 /etc/udev/rules.d/82-aorus-5090-nvidia-permissions.rules
 check_file_match etc/modprobe.d/aorus-5090-compute-only.conf \
                  /etc/modprobe.d/aorus-5090-compute-only.conf
 check_file_match etc/modprobe.d/blacklist-nouveau.conf \
@@ -173,6 +175,9 @@ check_unit_state nvidia-persistenced.service enabled
 check_unit_state aorus-5090-uvm-keepalive.service enabled
 check_unit_state nvidia-fallback.service masked
 check_unit_state nvidia-powerd.service disabled
+check_unit_state switcheroo-control.service masked
+check_unit_state nvidia-cdi-refresh.path masked
+check_unit_state nvidia-cdi-refresh.service masked
 
 active_state() {
     local unit="$1"
@@ -429,6 +434,82 @@ else
     else
         ok "aorus-5090-uvm-keepalive: not running (eGPU not present, expected)"
     fi
+fi
+
+# ----------------------------------------- 8c. NVIDIA loader entries disabled --
+section "8c. NVIDIA Vulkan / EGL / OpenCL loader entries (compute-only mode)"
+
+# Files that, if present, cause user-session apps (gnome-shell, ptyxis,
+# vulkan-using GUI apps) to dlopen NVIDIA libs and incidentally open
+# /dev/nvidia*. Disabled by renaming to .aorus-disabled. An RPM upgrade
+# will recreate them; this check catches that regression.
+check_loader_disabled() {
+    local original="$1" label="$2"
+    if [[ -f "$original" ]]; then
+        fail "$label: $original is PRESENT (compute-only mode wants this disabled; re-run apply.sh)"
+    elif [[ -f "$original.aorus-disabled" ]]; then
+        ok "$label: disabled ($original.aorus-disabled)"
+    else
+        info "$label: not installed (ok)"
+    fi
+}
+check_loader_disabled /usr/share/vulkan/icd.d/nvidia_icd.x86_64.json     "Vulkan ICD"
+check_loader_disabled /usr/share/vulkan/implicit_layer.d/nvidia_layers.json "Vulkan implicit layer"
+check_loader_disabled /usr/share/glvnd/egl_vendor.d/10_nvidia.json       "EGL vendor"
+check_loader_disabled /etc/OpenCL/vendors/nvidia.icd                     "OpenCL ICD"
+
+# ------------------------------------------ 8d. /dev/nvidia* permissions ---
+section "8d. /dev/nvidia* device-file permissions"
+
+check_dev_perms() {
+    local dev="$1"
+    if [[ ! -e "$dev" ]]; then
+        info "$dev: not present"
+        return
+    fi
+    local mode group
+    mode=$(stat -c '%a' "$dev")
+    group=$(stat -c '%G' "$dev")
+    if [[ "$mode" == "660" && "$group" == "ollama" ]]; then
+        ok "$dev: 0660 root:ollama"
+    else
+        fail "$dev: 0$mode root:$group (want 0660 root:ollama; udev rule + reboot or apply.sh to converge)"
+    fi
+}
+check_dev_perms /dev/nvidia0
+check_dev_perms /dev/nvidiactl
+check_dev_perms /dev/nvidia-uvm
+check_dev_perms /dev/nvidia-uvm-tools
+if [[ -d /dev/nvidia-caps ]]; then
+    for cap in /dev/nvidia-caps/*; do
+        check_dev_perms "$cap"
+    done
+fi
+
+# --------------------------------------- 8e. exclusivity (lsof check) ------
+section "8e. /dev/nvidia* exclusivity (only authorised processes holding)"
+
+# The eGPU is supposed to be a CUDA-only accelerator. Anything other than
+# the expected compute-stack processes holding /dev/nvidia* is a regression
+# - usually a user-session app that dlopen'd NVIDIA libs and incidentally
+# opened the device. Causes close-path-bug exposure on its exit.
+authorised_re='^(nvidia-pe|sleep|ollama|ollama_llama_server)$'
+nvidia_files=(/dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools)
+unauthorised=$(lsof "${nvidia_files[@]}" 2>/dev/null \
+    | awk 'NR>1 {print $1, "(pid="$2",user="$3")"}' \
+    | sort -u \
+    | { while read -r line; do
+            cmd=$(awk '{print $1}' <<<"$line")
+            if ! [[ "$cmd" =~ $authorised_re ]]; then
+                printf '%s\n' "$line"
+            fi
+        done
+      })
+if [[ -z "$unauthorised" ]]; then
+    ok "no unauthorised holders of /dev/nvidia*"
+else
+    warn "unauthorised holders of /dev/nvidia*:"
+    printf '%s\n' "$unauthorised" | head -10 | sed 's/^/        /'
 fi
 
 # ------------------------------------------------------------- 9. DRM cards --

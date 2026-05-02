@@ -60,6 +60,8 @@ copy_if_different etc/udev/rules.d/79-aorus-5090-no-autoload.rules \
                   /etc/udev/rules.d/79-aorus-5090-no-autoload.rules 0644
 copy_if_different etc/udev/rules.d/81-aorus-5090-compute-power.rules \
                   /etc/udev/rules.d/81-aorus-5090-compute-power.rules 0644
+copy_if_different etc/udev/rules.d/82-aorus-5090-nvidia-permissions.rules \
+                  /etc/udev/rules.d/82-aorus-5090-nvidia-permissions.rules 0644
 
 # modprobe configs
 copy_if_different etc/modprobe.d/aorus-5090-compute-only.conf \
@@ -91,6 +93,7 @@ step "restore SELinux contexts and reload udev"
 restorecon_paths=(
     /etc/udev/rules.d/79-aorus-5090-no-autoload.rules
     /etc/udev/rules.d/81-aorus-5090-compute-power.rules
+    /etc/udev/rules.d/82-aorus-5090-nvidia-permissions.rules
     /etc/modprobe.d/aorus-5090-compute-only.conf
     /etc/modprobe.d/blacklist-nouveau.conf
     /etc/systemd/system/aorus-5090-compute-load-nvidia.service
@@ -170,6 +173,49 @@ if [[ "$(systemctl is-enabled nvidia-powerd.service 2>&1)" != "disabled" ]] \
     printf '  disabled: nvidia-powerd.service\n'
 fi
 
+# Compute-only mode: mask GPU-touching system services that are pointless
+# on this host. Each is a potential close-path-bug trigger if it dlopens
+# libnvidia-ml or opens /dev/nvidia* during its lifecycle.
+#
+#   switcheroo-control.service - shipped in /usr/lib/, standard mask works.
+#                                 Manages display GPU switching for laptops
+#                                 with hybrid graphics; we are compute-only.
+#   nvidia-cdi-refresh.path    - shipped DIRECTLY in /etc/systemd/system/ by
+#                                 nvidia-container-toolkit RPM. systemctl
+#                                 mask refuses ("File already exists"); we
+#                                 rename the original aside and symlink
+#                                 /dev/null in its place. Same effect.
+#                                 The .path watches modules.dep + nvidia-ctk
+#                                 and triggers .service to dlopen libnvml.
+mask_unit_robust() {
+    local unit="$1"
+    local etc_path="/etc/systemd/system/$unit"
+    if [[ "$(systemctl is-enabled "$unit" 2>&1)" == "masked" ]]; then
+        printf '  already masked: %s\n' "$unit"
+        return 0
+    fi
+    # Try standard masking first (works when unit is in /usr/lib/).
+    if systemctl mask "$unit" >/dev/null 2>&1; then
+        printf '  masked: %s\n' "$unit"
+        return 0
+    fi
+    # Standard mask refused: a regular file in /etc/ is blocking the
+    # /dev/null symlink. Rename it aside and create the mask symlink.
+    if [[ -f "$etc_path" && ! -L "$etc_path" ]]; then
+        mv "$etc_path" "$etc_path.aorus-disabled"
+        ln -sf /dev/null "$etc_path"
+        printf '  masked (via rename + /dev/null symlink): %s\n' "$unit"
+        return 0
+    fi
+    yellow "  WARNING: could not mask $unit (no /etc/ file to rename)"
+    return 1
+}
+
+mask_unit_robust switcheroo-control.service
+mask_unit_robust nvidia-cdi-refresh.path
+mask_unit_robust nvidia-cdi-refresh.service
+systemctl daemon-reload
+
 # Enable the bind service.
 if ! systemctl is-enabled aorus-5090-compute-load-nvidia.service >/dev/null 2>&1; then
     systemctl enable aorus-5090-compute-load-nvidia.service
@@ -198,6 +244,60 @@ fi
 autostart=/etc/xdg/autostart/nvidia-settings-user.desktop
 if [[ -f "$autostart" ]] && ! grep -q '^X-GNOME-Autostart-enabled=false' "$autostart"; then
     yellow "  WARNING: $autostart is not disabled; review it manually."
+fi
+
+# ----------------------------------------------- compute-only ICD/loader disables -
+step "compute-only: disable NVIDIA Vulkan / EGL / OpenCL loader entries"
+
+# Compute-only mode means non-CUDA frameworks (Vulkan, EGL, OpenGL, OpenCL)
+# have no business loading NVIDIA drivers on this host. The NVIDIA loader-
+# registration files cause user-session apps (gnome-shell, mutter, ptyxis,
+# etc.) to dlopen NVIDIA libs and incidentally open /dev/nvidia0 + nvidiactl
+# during enumeration. Each such open + close is a close-path-bug trigger.
+#
+# We disable each entry by renaming to a non-matching extension (.aorus-disabled).
+# Vulkan and EGL loaders only consider files ending in .json; OpenCL loader
+# only considers .icd. The rename is reversible by undoing the suffix.
+#
+# CAVEAT: an nvidia-driver RPM upgrade will recreate these files. status.sh's
+# Layer-4 check will catch the regression; re-run apply.sh to re-disable.
+
+disable_loader_entry() {
+    local src="$1"
+    if [[ -f "$src" ]]; then
+        mv "$src" "$src.aorus-disabled"
+        printf '  disabled: %s\n' "$src"
+    elif [[ -f "$src.aorus-disabled" ]]; then
+        printf '  already disabled: %s\n' "$src"
+    else
+        printf '  not present (ok): %s\n' "$src"
+    fi
+}
+
+disable_loader_entry /usr/share/vulkan/icd.d/nvidia_icd.x86_64.json
+disable_loader_entry /usr/share/vulkan/implicit_layer.d/nvidia_layers.json
+disable_loader_entry /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+disable_loader_entry /etc/OpenCL/vendors/nvidia.icd
+
+# ----------------------------------------------- ollama group membership ---
+step "ollama group membership"
+
+# The 82-aorus-5090-nvidia-permissions.rules udev rule restricts /dev/nvidia*
+# to root and the 'ollama' group. Add the human admin user (apnex) to this
+# group so unprivileged 'nvidia-smi' continues to work for diagnostics.
+# 'sudo nvidia-smi' will work regardless via root.
+#
+# Note: usermod -aG is APPENDING; existing groups are preserved. The change
+# only takes effect for NEW logins / shells; existing shells need 'newgrp
+# ollama' or relogin to see the new group.
+
+if id -u apnex >/dev/null 2>&1; then
+    if id -nG apnex | grep -qw ollama; then
+        printf '  apnex already in ollama group\n'
+    else
+        usermod -aG ollama apnex
+        yellow "  added apnex to ollama group; log out + back in to take effect"
+    fi
 fi
 
 # ---------------------------------------------------- live-state convergence -
@@ -235,6 +335,22 @@ elif systemctl is-active nvidia-persistenced.service >/dev/null 2>&1; then
 else
     printf '  starting nvidia-persistenced.service\n'
     systemctl start nvidia-persistenced.service || true
+fi
+
+# Apply the new udev permissions to existing /dev/nvidia* device files. Without
+# this, the rule only fires on next boot. udev rules MODE/GROUP are evaluated
+# at device creation, so for already-created devices we converge by hand.
+# Note: changing perms on an open file does NOT close existing handles - any
+# process currently holding /dev/nvidia0 (e.g. ptyxis after a libGLX_nvidia
+# dlopen) keeps its access. Reboot to flush.
+if [[ -e /dev/nvidia0 ]]; then
+    chgrp ollama /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools 2>/dev/null || true
+    chmod 0660 /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools 2>/dev/null || true
+    if [[ -d /dev/nvidia-caps ]]; then
+        chgrp ollama /dev/nvidia-caps/* 2>/dev/null || true
+        chmod 0660 /dev/nvidia-caps/* 2>/dev/null || true
+    fi
+    printf '  converged /dev/nvidia* perms to 0660 root:ollama (udev rule applies on next boot)\n'
 fi
 
 # Start the UVM keep-alive last in the chain. This is a freeze-risk event:
