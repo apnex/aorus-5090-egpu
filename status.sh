@@ -143,6 +143,8 @@ check_file_match etc/modprobe.d/blacklist-nouveau.conf \
                  /etc/modprobe.d/blacklist-nouveau.conf
 check_file_match etc/modprobe.d/nvidia-power-management.conf \
                  /etc/modprobe.d/nvidia-power-management.conf
+check_file_match etc/modprobe.d/nvidia.conf \
+                 /etc/modprobe.d/nvidia.conf
 check_file_match etc/systemd/system/aorus-5090-compute-load-nvidia.service \
                  /etc/systemd/system/aorus-5090-compute-load-nvidia.service
 check_file_match etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf \
@@ -611,6 +613,34 @@ if [[ -r "$modconf" ]]; then
     done <<< "$nvreg_pairs"
 else
     warn "$modconf not present - cannot verify NVreg runtime parameters"
+fi
+
+# ------------------ 8g. modprobe softdep on nvidia-drm absence -----------
+section "8g. nvidia-drm autoload prevention (softdep + install)"
+
+# The NVIDIA-CUDA-repo nvidia-driver RPM ships /usr/lib/modprobe.d/nvidia.conf
+# with a softdep on nvidia-drm:
+#   softdep nvidia post: nvidia-uvm nvidia-drm
+# Loading nvidia.ko via this softdep auto-loads nvidia-drm.ko, which creates
+# a /dev/dri/cardN entry. GNOME mutter picks it up as a display and the
+# Blackwell-over-Thunderbolt stack hard-freezes at GNOME login.
+#
+# Our /etc/modprobe.d/nvidia.conf SHADOW removes this softdep. Verify:
+softdep_resolved=$(modprobe --show-depends nvidia 2>&1)
+if grep -q 'nvidia-drm' <<<"$softdep_resolved"; then
+    fail "modprobe still resolves nvidia-drm in nvidia's dep chain (shadow not effective; expect GNOME freeze)"
+elif grep -q 'install /bin/false' <<<"$softdep_resolved"; then
+    ok "softdep on nvidia-drm absent + install /bin/false in place (autoload blocked)"
+else
+    warn "could not confirm nvidia-drm autoload prevention via modprobe --show-depends"
+fi
+
+# Belt-and-suspenders: directly resolve nvidia-drm and confirm install /bin/false
+drm_resolve=$(modprobe --show-depends nvidia-drm 2>&1)
+if grep -q 'install /bin/false' <<<"$drm_resolve"; then
+    ok "modprobe nvidia-drm directly resolves to install /bin/false"
+else
+    fail "modprobe nvidia-drm does NOT hit the install /bin/false guard - check aorus-5090-compute-only.conf"
 fi
 
 # --------------------------------------- 8e. exclusivity (lsof check) ------
