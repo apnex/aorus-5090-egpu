@@ -72,6 +72,8 @@ copy_if_different etc/systemd/system/aorus-5090-compute-load-nvidia.service \
                   /etc/systemd/system/aorus-5090-compute-load-nvidia.service 0644
 copy_if_different etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf \
                   /etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf 0644
+copy_if_different etc/systemd/system/aorus-5090-uvm-keepalive.service \
+                  /etc/systemd/system/aorus-5090-uvm-keepalive.service 0644
 
 # scripts
 copy_if_different usr/local/sbin/aorus-5090-compute-load-nvidia \
@@ -80,6 +82,8 @@ copy_if_different usr/local/sbin/aorus-5090-disable-audio \
                   /usr/local/sbin/aorus-5090-disable-audio 0755
 copy_if_different usr/local/sbin/aorus-5090-status \
                   /usr/local/sbin/aorus-5090-status 0755
+copy_if_different usr/local/sbin/aorus-5090-uvm-keepalive \
+                  /usr/local/sbin/aorus-5090-uvm-keepalive 0755
 
 # ----------------------------------------------------- SELinux / udev reload -
 step "restore SELinux contexts and reload udev"
@@ -91,9 +95,11 @@ restorecon_paths=(
     /etc/modprobe.d/blacklist-nouveau.conf
     /etc/systemd/system/aorus-5090-compute-load-nvidia.service
     /etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf
+    /etc/systemd/system/aorus-5090-uvm-keepalive.service
     /usr/local/sbin/aorus-5090-compute-load-nvidia
     /usr/local/sbin/aorus-5090-disable-audio
     /usr/local/sbin/aorus-5090-status
+    /usr/local/sbin/aorus-5090-uvm-keepalive
 )
 if command -v restorecon >/dev/null; then
     restorecon -F "${restorecon_paths[@]}" 2>/dev/null || true
@@ -180,6 +186,14 @@ else
     printf '  already enabled: nvidia-persistenced.service\n'
 fi
 
+# Enable the UVM keep-alive (extends persistenced's mitigation to /dev/nvidia-uvm).
+if ! systemctl is-enabled aorus-5090-uvm-keepalive.service >/dev/null 2>&1; then
+    systemctl enable aorus-5090-uvm-keepalive.service
+    printf '  enabled: aorus-5090-uvm-keepalive.service\n'
+else
+    printf '  already enabled: aorus-5090-uvm-keepalive.service\n'
+fi
+
 # Disable the user's nvidia-settings autostart if not already disabled.
 autostart=/etc/xdg/autostart/nvidia-settings-user.desktop
 if [[ -f "$autostart" ]] && ! grep -q '^X-GNOME-Autostart-enabled=false' "$autostart"; then
@@ -221,6 +235,23 @@ elif systemctl is-active nvidia-persistenced.service >/dev/null 2>&1; then
 else
     printf '  starting nvidia-persistenced.service\n'
     systemctl start nvidia-persistenced.service || true
+fi
+
+# Start the UVM keep-alive last in the chain. This is a freeze-risk event:
+# its first open() of /dev/nvidia-uvm runs against whatever the current
+# refcount is. If the device's count is 0 AND a prior CUDA process closed
+# UVM since boot, the close-side teardown may have already wedged the
+# kernel; the next open hangs the host. apply.sh has no way to prove a
+# fresh-boot refcount-was-never-nonzero state, so a freeze-prone window
+# exists during initial deployment. Once the keep-alive is up at boot
+# from this point forward, the window closes.
+if [[ ! -e /sys/bus/pci/devices/0000:04:00.0 ]]; then
+    : # eGPU not present; nothing to start
+elif systemctl is-active aorus-5090-uvm-keepalive.service >/dev/null 2>&1; then
+    printf '  aorus-5090-uvm-keepalive.service is active\n'
+else
+    printf '  starting aorus-5090-uvm-keepalive.service\n'
+    systemctl start aorus-5090-uvm-keepalive.service || true
 fi
 
 # --------------------------------------------------------------- final check -

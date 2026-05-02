@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Hold /dev/nvidia-uvm and /dev/nvidia-uvm-tools open for the lifetime of the
+# system. Mirrors nvidia-persistenced's role for /dev/nvidia0 + /dev/nvidiactl,
+# but for the UVM device files which persistenced does NOT cover.
+#
+# Why this exists: the close-path teardown bug documented in
+# architecture.md#problem-2 also affects /dev/nvidia-uvm. CUDA processes (any
+# CUDA process — vLLM, ollama, nvidia-smi-equivalents) open UVM and on exit
+# close it. If the closer is the LAST opener, the 1->0 transition runs the
+# kernel/GSP teardown that wedges the next open of UVM. The host then hangs
+# silently the next time anything touches UVM (which can be minutes later, or
+# triggered by an unrelated background process). See
+# /root/ollama/docs/freeze-2026-05-02-1032.md for the evidence.
+#
+# Mitigation: keep at least one fd held on each UVM device file at all times.
+# With this helper alive, no other process can be the "last closer", so the
+# 1->0 transition never happens, the teardown never runs, and subsequent
+# opens always succeed.
+#
+# Hard requirements for this to actually work:
+#
+# 1. Must be the FIRST process to open /dev/nvidia-uvm after boot. The systemd
+#    unit orders us After= aorus-5090-compute-load-nvidia.service (which loads
+#    nvidia_uvm and creates the device files) and Before= multi-user.target,
+#    so user-session CUDA services see us already holding the fds.
+#
+# 2. Must NEVER close the fds. The unit specifies Restart=no — restart means
+#    close+reopen, which IS the 1->0 transition we are preventing. If we die,
+#    the system goes vulnerable until reboot. Same reasoning as the
+#    persistenced drop-in.
+#
+# 3. Must outlive every CUDA-using process. WantedBy=multi-user.target gives
+#    a system-lifecycle. The process stops only on shutdown / explicit stop.
+
+set -euo pipefail
+
+if [[ ! -c /dev/nvidia-uvm ]]; then
+    echo "FATAL: /dev/nvidia-uvm is not present" >&2
+    echo "       The aorus-5090-compute-load-nvidia loader should have pre-staged" >&2
+    echo "       nvidia_uvm. If this triggers, the loader did not run or failed." >&2
+    exit 1
+fi
+
+if [[ ! -c /dev/nvidia-uvm-tools ]]; then
+    echo "FATAL: /dev/nvidia-uvm-tools is not present" >&2
+    exit 1
+fi
+
+# Open both UVM device files read-write on dedicated fds. Mode <> mirrors how
+# nvidia-persistenced opens /dev/nvidia0 (lsof shows mode 'u' = read-write).
+# Whether read-write versus read-only matters at the kernel level for UVM
+# open is undocumented; matching the proven persistenced pattern is the safer
+# default.
+exec 3<>/dev/nvidia-uvm
+exec 4<>/dev/nvidia-uvm-tools
+
+echo "aorus-5090-uvm-keepalive: holding fd 3 -> /dev/nvidia-uvm, fd 4 -> /dev/nvidia-uvm-tools"
+
+# Replace ourselves with sleep so the fds outlive the bash interpreter and the
+# resulting process is minimal (no shell-parsing, no child-reaping concerns,
+# no surprises around signal forwarding). fds 3 and 4 are inherited across
+# exec by default — we have not set FD_CLOEXEC on them.
+exec sleep infinity

@@ -47,6 +47,18 @@ Validated 2026-05-01: with `nvidia_uvm` pre-staged, the CUDA Driver API smoke te
 
 The install lines in `etc/modprobe.d/aorus-5090-compute-only.conf` remain because they still serve their original purpose — preventing arbitrary processes from triggering an `nvidia` or `nvidia_uvm` load before our service has bound them. We just route around them at boot via the loader's `--ignore-install`.
 
+### Problem 4: The close-path bug also affects `/dev/nvidia-uvm`
+
+A delayed-discovery extension of Problem 2, identified on 2026-05-02 during the ollama bring-up that followed the validated `cuInit` work above. Full evidence at `/root/ollama/docs/freeze-2026-05-02-1032.md` and the forensic snapshot at `/root/ollama/archive/freeze-2026-05-02-1032/`.
+
+Persistenced's mitigation in Problem 2 holds `/dev/nvidiactl` and `/dev/nvidia0` open. It does NOT cover `/dev/nvidia-uvm` (or `/dev/nvidia-uvm-tools`). Confirmed via `lsof -p $(pidof nvidia-persistenced)`: zero fds on either UVM device file.
+
+CUDA processes (vLLM, ollama, anything that calls `cuInit`) open `/dev/nvidia-uvm` for unified memory. When such a process exits, it closes UVM. If it was the LAST opener of UVM at that moment, the kernel/GSP runs the same close-side teardown that Problem 2 documents — but on UVM rather than `/dev/nvidia0` — and a future open hangs the host. Identical silent-hang fingerprint: no Xid, no NVRM, no AER, no panic, no coredump.
+
+The bug is probabilistic: not every CUDA-process exit triggers the wedge, and the wedge often manifests minutes later when an unrelated background process (e.g. PackageKit during `dnf-makecache`) makes the next UVM open. ollama amplifies the exposure because its daemon spawns short-lived `ollama runner` subprocesses for discovery (4 runners on startup) and one per inference; every runner exit is a potential UVM close-path event.
+
+**Fix:** `aorus-5090-uvm-keepalive.service` — a small shell helper that opens `/dev/nvidia-uvm` and `/dev/nvidia-uvm-tools` read-write, `echo`'s a status line, and `exec sleep infinity`. With the helper held open, the open-count on each UVM device file never drops below 1, the close-side teardown never runs, and subsequent opens always succeed. Same shape of mitigation as persistenced for `/dev/nvidia0`.
+
 ## How the configuration enforces this
 
 ### Boot args
@@ -91,6 +103,14 @@ The loader script bypasses these blocks with `modprobe --ignore-install nvidia`.
 - `After=` and `Requires=aorus-5090-compute-load-nvidia.service` - persistenced will only start if the GPU is bound, and it will start after the bind.
 - `ConditionPathExists=/sys/bus/pci/devices/0000:04:00.0` - skip cleanly with eGPU disconnected (mirrors the bind service).
 - `Restart=no` - explicitly disable systemd auto-restart. If persistenced dies while `nvidia` is loaded, restarting it would close+reopen device files and freeze the host. Better to fail loud.
+
+`aorus-5090-uvm-keepalive.service`:
+
+- Complements persistenced for `/dev/nvidia-uvm` + `/dev/nvidia-uvm-tools`. See Problem 4 above for why this is needed.
+- `After=` and `Requires=aorus-5090-compute-load-nvidia.service nvidia-persistenced.service` - starts only after the loader has pre-staged `nvidia_uvm` (creating the UVM device files) and persistenced is up.
+- `WantedBy=multi-user.target` plus the After-chain places this before user-session CUDA services, so it wins the race to first-open of `/dev/nvidia-uvm` after boot.
+- `Restart=no` for the same reason as persistenced: a restart is a close+reopen, which IS the 1->0->1 transition we are preventing.
+- Calls `/usr/local/sbin/aorus-5090-uvm-keepalive`, which checks the device files exist, opens them read-write on fds 3 and 4, and execs `sleep infinity`. The sleep process inherits the fds and holds them for the lifetime of the unit.
 
 ### Other state
 

@@ -129,6 +129,8 @@ check_file_match etc/systemd/system/aorus-5090-compute-load-nvidia.service \
                  /etc/systemd/system/aorus-5090-compute-load-nvidia.service
 check_file_match etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf \
                  /etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf
+check_file_match etc/systemd/system/aorus-5090-uvm-keepalive.service \
+                 /etc/systemd/system/aorus-5090-uvm-keepalive.service
 
 # -------------------------------------------------------------- 4. scripts --
 section "4. Scripts"
@@ -150,6 +152,7 @@ check_script() {
 check_script usr/local/sbin/aorus-5090-compute-load-nvidia /usr/local/sbin/aorus-5090-compute-load-nvidia
 check_script usr/local/sbin/aorus-5090-disable-audio /usr/local/sbin/aorus-5090-disable-audio
 check_script usr/local/sbin/aorus-5090-status /usr/local/sbin/aorus-5090-status
+check_script usr/local/sbin/aorus-5090-uvm-keepalive /usr/local/sbin/aorus-5090-uvm-keepalive
 
 # ---------------------------------------------------- 5. systemd unit state -
 section "5. systemd units"
@@ -167,6 +170,7 @@ check_unit_state() {
 
 check_unit_state aorus-5090-compute-load-nvidia.service enabled
 check_unit_state nvidia-persistenced.service enabled
+check_unit_state aorus-5090-uvm-keepalive.service enabled
 check_unit_state nvidia-fallback.service masked
 check_unit_state nvidia-powerd.service disabled
 
@@ -219,6 +223,20 @@ if [[ -f /etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf ]]; t
 else
     fail "persistenced drop-in missing"
 fi
+
+a="$(active_state aorus-5090-uvm-keepalive.service)"
+case "$a" in
+    active) ok "aorus-5090-uvm-keepalive.service active state: active" ;;
+    failed) fail "aorus-5090-uvm-keepalive.service active state: failed (UVM close-path bug is unmitigated; CUDA processes will eventually freeze the host)" ;;
+    inactive)
+        if [[ -e /sys/bus/pci/devices/0000:04:00.0 ]]; then
+            fail "aorus-5090-uvm-keepalive.service: inactive (UVM close-path unmitigated; reboot to align)"
+        else
+            ok "aorus-5090-uvm-keepalive.service: inactive (eGPU not present)"
+        fi
+        ;;
+    *) warn "aorus-5090-uvm-keepalive.service active state: $a" ;;
+esac
 
 # ----------------------------------------------------- 6. PCI device state --
 section "6. PCI device state"
@@ -379,6 +397,37 @@ else
         fail "nvidia-persistenced: NOT running (nvidia-smi will freeze on second invocation)"
     else
         ok "nvidia-persistenced: not running (eGPU not present, expected)"
+    fi
+fi
+
+# UVM keep-alive: complementary to persistenced. Holds /dev/nvidia-uvm and
+# /dev/nvidia-uvm-tools open so CUDA processes (vLLM, ollama, etc.) cannot
+# be the last closer when they exit. See architecture.md and
+# /root/ollama/docs/freeze-2026-05-02-1032.md for the bug evidence.
+section "8b. UVM keep-alive (complementary to persistenced)"
+
+ka_pid=""
+if [[ "$(active_state aorus-5090-uvm-keepalive.service)" == "active" ]]; then
+    ka_pid=$(systemctl show -p MainPID --value aorus-5090-uvm-keepalive.service 2>/dev/null || true)
+fi
+
+if [[ -n "$ka_pid" && "$ka_pid" != "0" ]] && kill -0 "$ka_pid" 2>/dev/null; then
+    uvm_fds=$(ls -1 /proc/"$ka_pid"/fd 2>/dev/null \
+        | xargs -I{} readlink /proc/"$ka_pid"/fd/{} 2>/dev/null \
+        | grep -c '^/dev/nvidia-uvm$' || true)
+    uvm_tools_fds=$(ls -1 /proc/"$ka_pid"/fd 2>/dev/null \
+        | xargs -I{} readlink /proc/"$ka_pid"/fd/{} 2>/dev/null \
+        | grep -c '^/dev/nvidia-uvm-tools$' || true)
+    if (( uvm_fds >= 1 && uvm_tools_fds >= 1 )); then
+        ok "keep-alive holding $uvm_fds fd on /dev/nvidia-uvm, $uvm_tools_fds on /dev/nvidia-uvm-tools (pid=$ka_pid)"
+    else
+        fail "keep-alive running (pid=$ka_pid) but UVM fds missing: uvm=$uvm_fds, uvm-tools=$uvm_tools_fds"
+    fi
+else
+    if [[ -e /sys/bus/pci/devices/0000:04:00.0 ]]; then
+        fail "aorus-5090-uvm-keepalive: NOT running (UVM close-path bug unmitigated; CUDA workloads can freeze the host)"
+    else
+        ok "aorus-5090-uvm-keepalive: not running (eGPU not present, expected)"
     fi
 fi
 

@@ -21,7 +21,17 @@ step() { printf '\n=== %s ===\n' "$*"; }
 
 step "stop and disable services"
 
-# Stop persistenced first. If nvidia is loaded, this will leave the host in
+# Stop the keep-alive first - it depends on persistenced via Requires=, so
+# stopping persistenced while keep-alive is active would also stop keep-alive
+# but in an unordered way. Stopping the keep-alive at all closes its UVM fds
+# and exposes the close-path bug; this is unavoidable when removing the
+# stack. Same caveat as persistenced below: reboot to clear in-memory state.
+if systemctl is-active aorus-5090-uvm-keepalive.service >/dev/null 2>&1; then
+    systemctl stop aorus-5090-uvm-keepalive.service || true
+fi
+systemctl disable aorus-5090-uvm-keepalive.service >/dev/null 2>&1 || true
+
+# Stop persistenced. If nvidia is loaded, this will leave the host in
 # a freeze-prone state until reboot - that is unavoidable on this hardware.
 if systemctl is-active nvidia-persistenced.service >/dev/null 2>&1; then
     systemctl stop nvidia-persistenced.service || true
@@ -47,6 +57,7 @@ remove_if_exists() {
 remove_if_exists /etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf
 rmdir /etc/systemd/system/nvidia-persistenced.service.d 2>/dev/null || true
 remove_if_exists /etc/systemd/system/aorus-5090-compute-load-nvidia.service
+remove_if_exists /etc/systemd/system/aorus-5090-uvm-keepalive.service
 
 # udev / modprobe / scripts
 remove_if_exists /etc/udev/rules.d/79-aorus-5090-no-autoload.rules
@@ -56,6 +67,7 @@ remove_if_exists /etc/modprobe.d/blacklist-nouveau.conf
 remove_if_exists /usr/local/sbin/aorus-5090-compute-load-nvidia
 remove_if_exists /usr/local/sbin/aorus-5090-disable-audio
 remove_if_exists /usr/local/sbin/aorus-5090-status
+remove_if_exists /usr/local/sbin/aorus-5090-uvm-keepalive
 remove_if_exists /usr/local/bin/aorus-5090-status
 
 step "reload systemd and udev"
