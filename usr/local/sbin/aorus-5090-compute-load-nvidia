@@ -150,6 +150,28 @@ fi
 # nvidia_uvm already present and never has to invoke modprobe.
 modprobe --ignore-install nvidia_uvm
 
+# Materialise /dev/nvidia-uvm-tools alongside /dev/nvidia-uvm.
+#
+# `modprobe nvidia_uvm` creates /dev/nvidia-uvm via devtmpfs but does NOT
+# create /dev/nvidia-uvm-tools - that one only appears when a userspace
+# CUDA process triggers it (or when nvidia-modprobe is invoked correctly).
+#
+# Without /dev/nvidia-uvm-tools at boot, our aorus-5090-uvm-keepalive.service
+# fails its ConditionPathExists check and skips. ollama (or any CUDA process)
+# then runs unprotected and the close-path-on-UVM bug refreezes the host -
+# observed 2026-05-02, multiple times, post-keepalive-deployment.
+#
+# `nvidia-modprobe -u -c 0` creates BOTH /dev/nvidia-uvm (minor 0) and
+# /dev/nvidia-uvm-tools (minor 1) via mknod. Idempotent - no-op if both
+# files are correct. This is the same canonical NVIDIA tool used elsewhere
+# in the stack; it is setuid root and does not require we know the dynamic
+# UVM major number ourselves.
+#
+# We tolerate failure here (|| true): if nvidia-modprobe is missing or fails,
+# the bind succeeded and we will report it; the keep-alive will fail noisily
+# at its ConditionPathExists check, which is the right escalation path.
+nvidia-modprobe -u -c 0 || echo "WARNING: nvidia-modprobe -u -c 0 failed; /dev/nvidia-uvm-tools may not exist" >&2
+
 # Restore the manual override now that we have bound on purpose; this prevents
 # any future udev re-add from auto-binding the device to a different driver.
 set_attr "$gpu_dev/driver_override" aorus_5090_manual

@@ -59,6 +59,8 @@ The bug is probabilistic: not every CUDA-process exit triggers the wedge, and th
 
 **Fix:** `aorus-5090-uvm-keepalive.service` — a small shell helper that opens `/dev/nvidia-uvm` and `/dev/nvidia-uvm-tools` read-write, `echo`'s a status line, and `exec sleep infinity`. With the helper held open, the open-count on each UVM device file never drops below 1, the close-side teardown never runs, and subsequent opens always succeed. Same shape of mitigation as persistenced for `/dev/nvidia0`.
 
+**Boot-time prerequisite (discovered 2026-05-02 the hard way):** `modprobe nvidia_uvm` only creates `/dev/nvidia-uvm` via devtmpfs — it does **NOT** create `/dev/nvidia-uvm-tools`. The `-tools` device file gets materialised lazily, by the first userspace caller to invoke `nvidia-modprobe -u -c 0` (or by a CUDA process triggering the same path internally). Without an explicit creation step, the keep-alive's `ConditionPathExists=/dev/nvidia-uvm-tools` fails at boot, the unit skips, and the system runs unprotected. The aorus-5090-compute-load-nvidia loader script invokes `nvidia-modprobe -u -c 0` immediately after `modprobe --ignore-install nvidia_uvm` to materialise both UVM device files before the keep-alive's condition check runs. The bare invocation `nvidia-modprobe -u` (without `-c 0`) is a no-op; `-u -c 0 -c 1` is destructive (creates additional UVM devices at minors 1 and 2 that overwrite the canonical files). `-u -c 0` is the only correct form.
+
 ## How the configuration enforces this
 
 ### Boot args
@@ -96,7 +98,7 @@ The loader script bypasses these blocks with `modprobe --ignore-install nvidia`.
 - `After=systemd-udev-settle.service bolt.service`, `Before=graphical.target`. The eGPU must be enumerated and authorized before this runs; persistenced and GDM must come after.
 - `ConditionPathExists=/sys/bus/pci/devices/0000:04:00.0` - skip cleanly if the eGPU is not connected.
 - `Type=oneshot, RemainAfterExit=yes` - one-shot bind, then stays "active (exited)" so dependents (persistenced) can `Requires=` it.
-- Calls `/usr/local/sbin/aorus-5090-compute-load-nvidia`, which: applies upstream PM policy; verifies BAR0 and BAR1; clears `driver_override`; `modprobe --ignore-install nvidia`; pokes `drivers_probe`; restores `driver_override` to prevent any future auto-rebind to a wrong driver.
+- Calls `/usr/local/sbin/aorus-5090-compute-load-nvidia`, which: applies upstream PM policy; verifies BAR0 and BAR1; clears `driver_override`; `modprobe --ignore-install nvidia`; pokes `drivers_probe`; restores `driver_override` to prevent any future auto-rebind to a wrong driver; `modprobe --ignore-install nvidia_uvm`; runs `nvidia-modprobe -u -c 0` to materialise both `/dev/nvidia-uvm` and `/dev/nvidia-uvm-tools` (see Problem 4).
 
 `nvidia-persistenced.service.d/aorus-egpu.conf` (drop-in):
 
