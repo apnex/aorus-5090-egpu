@@ -501,6 +501,19 @@ if [[ -r "$modconf" ]]; then
     fi
 fi
 
+# Confirm nvidia-persistenced (system user, runs the daemon on F43+CUDA-repo
+# install) is a member of the ollama group. Without this, persistenced can't
+# open /dev/nvidia0 + nvidiactl (0660 root:ollama), exits at startup, and the
+# close-path bug becomes triggerable on any nvidia-smi call. apply.sh should
+# add the membership; this check confirms it took effect.
+if id -u nvidia-persistenced >/dev/null 2>&1; then
+    if id -nG nvidia-persistenced | grep -qw ollama; then
+        ok "nvidia-persistenced is in ollama group (can open /dev/nvidia0 + nvidiactl)"
+    else
+        fail "nvidia-persistenced is NOT in ollama group (persistenced will fail to open /dev/nvidia0; re-run apply.sh)"
+    fi
+fi
+
 # check_dev_perms supports two severities:
 #   fail (default) - for nvidia0 / nvidiactl, where NVreg_DeviceFile* in
 #     modprobe.d makes perms persist through nvidia-modprobe re-runs.

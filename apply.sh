@@ -312,6 +312,22 @@ if id -u apnex >/dev/null 2>&1; then
     fi
 fi
 
+# nvidia-persistenced (UID 967) is created by the NVIDIA-CUDA-repo
+# nvidia-persistenced RPM via sysusers. The daemon runs as that user
+# (NOT root, unlike the F42 RPMFusion build which had no sysusers config).
+# Without ollama group membership, persistenced cannot open /dev/nvidia0 +
+# nvidiactl (which we tighten to 0660 root:ollama). Result: persistenced
+# fails to start -> /dev/nvidia0 has no holder -> any subsequent close-path
+# event freezes the host. Add to ollama group so it can hold those fds.
+if id -u nvidia-persistenced >/dev/null 2>&1; then
+    if id -nG nvidia-persistenced | grep -qw ollama; then
+        printf '  nvidia-persistenced already in ollama group\n'
+    else
+        usermod -aG ollama nvidia-persistenced
+        printf '  added nvidia-persistenced to ollama group\n'
+    fi
+fi
+
 # ---------------------------------------------------- live-state convergence -
 step "live state"
 
