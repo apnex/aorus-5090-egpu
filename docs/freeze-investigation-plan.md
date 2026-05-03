@@ -425,6 +425,28 @@ J-1 sits cleanly between Lever I and Lever J-2. It's the
 NVIDIA-agnostic prevention layer; if it works alone we never need
 to touch nvidia.ko's recovery internals.
 
+### Lever-by-lever empirical results (2026-05-03 late update)
+
+| Lever | Status | Result |
+|---|---|---|
+| A | DONE | confirmed negative; freeze identical on Lever-A-only |
+| G | DONE | confirmed positive (control); WSL2 = 45-iteration ladder up to 27B clean |
+| H | **DONE — confirmed negative** | freeze identical with Lever H active; predicted by Pass-3 source review (sync sanity-check, not timeout-bounded) |
+| K | **DONE — not statistically distinguishable** | freeze still occurs; single-sample, can't claim rate change either way |
+| I | not yet executed | most promising remaining lever; addresses trigger directly |
+| J-1 | not yet executed | gated on Lever I outcome |
+| J-2 | not yet executed | patch surface expanded — see source-review-notes Pass 5 |
+
+The lite test on 2026-05-03 evening (Lever A+H+K stacked) captured a
+new deadlock locus: kernel hangs at `journal.c:2239` after a 14-iteration
+fn 78 cascade through `nvdEngineDumpCallbackHelper` (`nv_debug_dump.c:273`).
+This is the `RmLogGpuCrash` path — different from the previous freeze
+which deadlocked in channel cleanup at `rs_client.c:844`. Both paths run
+from `osHandleGpuLost`; which one deadlocks first appears non-deterministic
+(workitem scheduling / lock acquisition order). The L3 patch surface for
+Lever J-2 has been expanded to cover both. See `source-review-notes.md`
+Pass 5 for the full analysis.
+
 ### Lever I — Patch driver + DKMS rebuild (NEW, derived from Lever E pass 3)
 
 Source review pass 3 (2026-05-03 evening) localised the bug to a single

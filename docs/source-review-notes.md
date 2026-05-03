@@ -708,6 +708,106 @@ These are partly already applied (Lever A took the pci/RmForceExternalGpu
 slice), partly unexplored. Worth running before Lever I just to remove
 known-cheap variables.
 
+## Pass 5: Lever H + K test result + new deadlock locus (2026-05-03 late)
+
+Lite test executed with all three levers stacked (A + H + K). Host froze
+again. fsync-fixed harness preserved telemetry. Captured kernel log
+sequence is **different from the previous freeze** and pins down the
+deadlock locus to a new code path.
+
+### Captured kernel error sequence (this freeze)
+
+```
+NVRM: nvCheckOkFailedNoLog: Check failed: GPU lost from the bus
+       [NV_ERR_GPU_IS_LOST] (0x0000000F) returned from
+       nvdEngineDumpCallbackHelper(pGpu, pPrbEnc, pNvDumpState, pEngineCallback)
+       @ nv_debug_dump.c:273
+NVRM: _issueRpcAndWait: rpcSendMessage failed with status 0x0000000f
+       for fn 78 sequence 1106-1119  (14 iterations, fn 78 = engine state dump)
+NVRM: nvAssertFailedNoLog: Assertion failed: status == NV_OK @ journal.c:2239
+```
+
+No Xid 79 emitted. The freeze hung the kernel **inside the
+crash-logging path** before the journal flush completed.
+
+### What's new vs. previous freeze
+
+Previous freeze (lite-2026-05-03-192806, Lever-A-only) cascade:
+- Xid 79 emitted
+- fn 78 sequence 1091 (one)
+- Then fn 10 sequences 1133-1140 (channel cleanup, `rs_client.c:844`)
+- UVM fatal 0x60
+- Host hang likely in cleanup deadlock
+
+This freeze (lite-2026-05-03-211751, Lever A+H+K stacked):
+- No Xid 79 (or not flushed before hang)
+- 14 successive fn 78 RPCs (one per engine, `nvdEngineDumpCallbackHelper`)
+- Final assertion at `journal.c:2239`
+- Host hang in the assertion handler
+
+The same `osHandleGpuLost` declaration triggers **both** cleanup and
+crash-dump paths via `krcRcAndNotifyAllChannels` and `RmLogGpuCrash`
+respectively. Which path deadlocks first appears non-deterministic —
+likely depends on workitem scheduling and lock acquisition order.
+
+### Refined deadlock-locus inventory
+
+Both paths confirmed to deadlock the kernel under different races:
+
+| Path | Source location | Trigger function |
+|---|---|---|
+| Channel cleanup | `rs_client.c:844`, `rs_server.c:259` | `krcRcAndNotifyAllChannels` → fn 10 (`rpcRmApiFree_GSP`) |
+| **Engine state dump** | **`nv_debug_dump.c:273`, `journal.c:2239`** | **`RmLogGpuCrash` → `nvdEngineDumpCallbackHelper` → fn 78** |
+
+The L3 (graceful-failure) work in any future Lever J-2 needs to harden
+**both** paths. Patches needed:
+
+- `rs_client.c:844`, `rs_server.c:259`: relax assert to accept
+  `NV_ERR_GPU_IS_LOST` (already noted in Pass 3)
+- **`nv_debug_dump.c:273`**: short-circuit `nvdEngineDumpCallbackHelper`
+  if `PDB_PROP_GPU_IS_LOST` is set — don't try to dump engine state
+  via GSP RPC for a known-lost GPU (NEW)
+- **`journal.c:2239`**: relax the assert in the journal write path —
+  if the GPU is lost, log to a host-side journal sink rather than
+  asserting (NEW)
+- `RmLogGpuCrash`: skip outright when GPU is lost, OR use only
+  host-cached state, not register reads (NEW)
+
+### Lever-by-lever empirical results so far
+
+| Lever | Prediction | Observed | Conclusion |
+|---|---|---|---|
+| A | partial mitigation | identical fingerprint freeze | confirmed negative |
+| H | **predicted negative** (sync sanity-check, not timeout-bounded) | freeze identical, with Lever H active | **confirmed negative — prediction validated** |
+| K | partial mitigation if transients dominate | freeze still occurs; single-sample, can't claim rate change | **not statistically distinguishable from baseline** |
+| G | n/a (control) | 45-iteration ladder up to 27B clean | confirmed positive — bug is Linux-side |
+
+### Implications for forward plan
+
+1. **Lever I remains the most promising not-yet-tested lever.** It
+   addresses the *trigger* (the read-failure detection), so neither
+   the cleanup deadlock nor the engine-dump deadlock fires. ~10 lines
+   in `osHandleGpuLost`.
+
+2. **Lever J-2 patch surface expanded.** Originally needed L3 graceful-
+   failure patches at `rs_client.c:844` and `rs_server.c:259`. Now also
+   needs `nv_debug_dump.c:273` and `journal.c:2239`. Still small (4-6
+   patch sites total, each a few lines), but more sites means more
+   testing.
+
+3. **Lever H is closed out.** Confirmed to not affect this code path.
+   Don't propose again. The 30s timeout override remains in place but
+   can be removed without losing function (it's not catching anything).
+
+4. **Lever K is closed out for "fix" purposes** but stays as defense-
+   in-depth (can't be ruled harmful or actively beneficial from a
+   single sample; pcie_aspm.policy=performance et al. are reasonable
+   defaults regardless).
+
+5. **The fsync changes paid off twice.** Both freezes since the
+   methodology fix have produced kernel log + telemetry data we'd
+   never had. Cost: small. Diagnostic value: high.
+
 ## Source-review coverage gaps (parked reads)
 
 Honest inventory of what was NOT read end-to-end, in priority order. The
