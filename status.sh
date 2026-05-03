@@ -51,6 +51,16 @@ check_arg_in_cmdline 'rd.driver.blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'modprobe.blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'iommu=pt'
 
+# Lever K (Layer-1 prevention) boot args. Source: bilikaz's working
+# configuration in NVIDIA/open-gpu-kernel-modules#979 comment 9. These
+# pin PCIe / Thunderbolt power-state behaviour to reduce the rate of
+# transient register-read failures that trip the open module's
+# permanent-commit-on-first-failure path. See docs/source-review-notes.md
+# Pass 4 for the three-layer reliability framework.
+check_arg_in_cmdline 'pcie_aspm.policy=performance'
+check_arg_in_cmdline 'thunderbolt.clx=0'
+check_arg_in_cmdline 'pcie_port_pm=off'
+
 # IOMMU should be in passthrough mode for kernel-managed devices. The current
 # domain-type setting is recorded in dmesg early in boot.
 if [[ -d /sys/class/iommu/dmar0 ]]; then
