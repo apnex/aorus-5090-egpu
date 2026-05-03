@@ -125,11 +125,33 @@ for ko in "$SRC_DIR"/kernel-open/*.ko; do
     fi
 
     # NVIDIA dnf packaging compresses with xz; match that.
-    xz -c -k -- "$ko" > "$dst.tmp"
+    # CRITICAL: kernel module xz decompressor requires CRC32, not the
+    # default CRC64. Without --check=crc32, modprobe fails with
+    # "decompression failed with status 6" / "Invalid argument".
+    xz --check=crc32 -c -k -- "$ko" > "$dst.tmp"
     mv -f "$dst.tmp" "$dst"
     chmod 0644 "$dst"
     printf '  installed: %s\n' "$dst"
 done
+
+step "firmware-path symlink"
+
+# Patch 0005 bumps NVIDIA_VERSION to 595.71.05-aorus.1, which changes the
+# firmware lookup path inside the module to /lib/firmware/nvidia/595.71.05-aorus.1/
+# but the dnf-installed nvidia-gpu-firmware package still ships at
+# /lib/firmware/nvidia/595.71.05/. Create a symlink so GSP firmware loads
+# correctly under either name.
+NVIDIA_VERSION_PATCHED="$(grep '^NVIDIA_VERSION =' "$SRC_DIR/version.mk" | awk '{print $3}')"
+NVIDIA_VERSION_STOCK="595.71.05"
+if [[ "$NVIDIA_VERSION_PATCHED" != "$NVIDIA_VERSION_STOCK" ]]; then
+    fw_link="/lib/firmware/nvidia/$NVIDIA_VERSION_PATCHED"
+    if [[ -L "$fw_link" || -e "$fw_link" ]]; then
+        printf '  firmware path already present: %s\n' "$fw_link"
+    else
+        ln -sfn "$NVIDIA_VERSION_STOCK" "$fw_link"
+        printf '  symlinked: %s -> %s\n' "$fw_link" "$NVIDIA_VERSION_STOCK"
+    fi
+fi
 
 step "depmod"
 
