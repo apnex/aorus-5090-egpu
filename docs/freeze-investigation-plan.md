@@ -4,7 +4,7 @@ Working document for the active investigation into the silent host hang on
 first CUDA write op (e.g. `cuCtxCreate_v2`, ollama inference, PyTorch
 `torch.zeros(.., device='cuda')`) on this stack:
 
-- **Host:** Intel NUC 15 Pro+ (Arrow Lake, Core Ultra 9 288V)
+- **Host:** Intel NUC 15 Pro+ (Arrow Lake-H, Core Ultra 9 285H)
 - **eGPU enclosure:** GIGABYTE AORUS RTX 5090 AI BOX (Thunderbolt 5 / USB4,
   JHL9480 controller)
 - **GPU:** NVIDIA RTX 5090 (GB202, Blackwell)
