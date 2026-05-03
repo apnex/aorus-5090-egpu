@@ -268,6 +268,201 @@ later.)
    nvidia-uvm/uvm_blackwell*` between 595 and HEAD for any Blackwell × TB
    fixes that haven't landed in our branch yet. ~30 min.
 
+## Pass 3: complete failure model identified (2026-05-03 evening)
+
+Triggered by a captured kernel-log sequence on our hardware (first time we
+have one — `archive/lite-2026-05-03-192806/` — fsync changes worked).
+The journal captured the full cause/effect chain:
+
+```
+NVRM: Xid (PCI:0000:04:00): 79, GPU has fallen off the bus.
+NVRM: GPU 0000:04:00.0: GPU has fallen off the bus.
+NVRM: GPU 0000:04:00.0: GPU serial number is 0.
+[run nvidia-bug-report.sh ... message]
+NVRM: Xid (PCI:0000:04:00): 154, GPU recovery action changed from 0x0 (None) to 0x2 (Node Reboot Required)
+NVRM: _issueRpcAndWait: rpcSendMessage failed with status 0x0000000f for fn 78 sequence 1091!
+[... 8 more failures, fn 10 (rpcRmApiFree_GSP), sequences 1133-1140 ...]
+NVRM: nvGpuOpsReportFatalError: uvm encountered global fatal error 0x60, requiring os reboot to recover.
+```
+
+### The chain of events on our hardware
+
+1. **Trigger:** a TB-tunneled PCIe transaction returns `0xFFFFFFFF` (the
+   standard "no device on bus" pattern). This can happen for many reasons
+   on a Thunderbolt link: a momentary power-state transition, a retimer
+   drop, an LTR re-negotiation, or just transient noise. Internal PCIe
+   has the same failure modes but at much lower probability.
+2. **Detection:** `gpuSanityCheckRegRead_IMPL` (`src/nvidia/src/kernel/gpu/
+   gpu_access.c:1245`) is called for every register read. When the value
+   reads as all-1s, it does a confirmation read on `NV_PMC_BOOT_0`. If
+   that *also* returns `GPU_REG_VALUE_INVALID`, it calls
+   `osHandleGpuLost(pGpu, NV_TRUE)`.
+
+   Alternative entry: `gpuVerifyExistence_IMPL`
+   (`gpu_access.c:1215-1233`) reads `NV_PMC_BOOT_0` directly, compares
+   to cached `pGpu->chipId0`, and calls `osHandleGpuLost(pGpu, NV_TRUE)`
+   on mismatch. Single-retry then `NV_ERR_GPU_IS_LOST`.
+3. **Declaration:** `osHandleGpuLost`
+   (`src/nvidia/arch/nvalloc/unix/src/osinit.c:340-409`) re-reads
+   `NV_PMC_BOOT_0` once more. If the value still differs from the cached
+   `nvp->pmc_boot_0`, it:
+   - Emits Xid 79 (`ROBUST_CHANNEL_GPU_HAS_FALLEN_OFF_THE_BUS`) via
+     `nvErrorLog_va`
+   - Calls `gpuSetDisconnectedProperties` →
+     `pGpu->setProperty(pGpu, PDB_PROP_GPU_IS_LOST, NV_TRUE)` (and clears
+     `PDB_PROP_GPU_IS_CONNECTED`)
+   - Calls `krcRcAndNotifyAllChannels` to notify all CUDA channels
+   - Calls `RmLogGpuCrash`
+   - Sets `NV_FLAG_IN_SURPRISE_REMOVAL` (gated on
+     `PDB_PROP_GPU_IS_EXTERNAL_GPU` — i.e., this is the only meaningful
+     code path that uses our forced-eGPU property)
+4. **Sanity-gate-everything:** `_kgspRpcSanityCheck`
+   (`kernel_gsp.c:290-335`) is called at the top of every GSP-RPC.
+   With `PDB_PROP_GPU_IS_LOST=NV_TRUE`, it returns `NV_ERR_GPU_IS_LOST`
+   immediately, **without sending the RPC**.
+5. **Cleanup cascade:** UVM tries to clean up via `rpcRmApiFree_GSP`
+   (`vgpu/rpc.c:11483`, function code `fn 10`). Every call hits the
+   sanity-gate, returns `NV_ERR_GPU_IS_LOST`. The assertion at
+   `rs_client.c:844`:
+
+   ```c
+   status = serverFreeResourceRpcUnderLock(pServer, pParams);
+   NV_ASSERT((status == NV_OK) || (status == NV_ERR_GPU_IN_FULLCHIP_RESET));
+   ```
+
+   fires repeatedly because `NV_ERR_GPU_IS_LOST` is *not* in the
+   acceptable set. Same at `rs_server.c:259`. We see ~8 iterations
+   (sequences 1133-1140) of cleanup attempts, each failing identically.
+6. **UVM fatal:** Eventually UVM declares
+   `nvGpuOpsReportFatalError` with global fatal error `0x60`,
+   "requiring os reboot to recover".
+7. **Host hang:** Some subsequent code path (probably in
+   `krcRcAndNotifyAllChannels`, `RmLogGpuCrash`, or the workitem queued
+   by `gpuSetDisconnectedProperties`) deadlocks the kernel. Exact
+   mechanism not yet pinned, but Xid 79 + the RPC cascade was logged
+   *before* the freeze, so the deadlock is in the post-detection
+   recovery work.
+
+### The smoking-gun comment from NVIDIA
+
+In `osinit.c:361-364` (`osHandleGpuLost`):
+
+```c
+//
+// This doesn't support PEX Reset and Recovery yet.
+// This will help to prevent accessing registers of a GPU
+// which has fallen off the bus.
+//
+```
+
+**NVIDIA documents that the open Linux module does not implement PCIe
+error recovery.** A single transient register-read failure makes a
+permanent decision: GPU is lost, no second chances, reboot required.
+
+This is the structural difference vs. Windows. Windows nvlddmkm.sys has:
+- Native PCIe AER recovery (link can retrain after a transient drop)
+- WHQL-mandated multi-retry register-read paths
+- TDR — driver reset on stall, system continues
+
+The Linux open module has none of these on this code path. One bad read
+→ permanent device loss → reboot.
+
+### Why TB-tunneled PCIe trips this where internal PCIe doesn't
+
+Two contributors:
+
+1. **TB transaction failure rate is non-zero.** Internal PCIe has
+   essentially zero transient failures under normal operation. TB has
+   measurably higher rates due to retimers, power management, link
+   retraining, LTR negotiation, etc. Even a 1-in-10⁹ failure rate gets
+   exercised quickly when ollama issues thousands of register reads
+   during cuCtxCreate.
+2. **The detection-and-decide is too aggressive for TB.** With only
+   2-3 reads (the suspicious read + 1-2 confirmations on
+   `NV_PMC_BOOT_0`), the TB tunnel has far less opportunity to
+   recover from a transient than the driver has to declare loss.
+   Windows likely retries on a longer cadence (or uses AER as the
+   authoritative signal rather than register reads).
+
+### Why Lever H (timeout override) WILL NOT help
+
+Source review pass 2 hypothesised that the GSP-RPC default timeout (4s
+in graphics mode) was firing during cuCtxCreate and triggering a
+deadlock-on-recovery. **That hypothesis is wrong.** The captured
+journal shows:
+
+- `rpcSendMessage` failures, NOT `gpuTimeoutCondWait` failures
+- Failures with `NV_ERR_GPU_IS_LOST`, NOT `NV_ERR_TIMEOUT`
+- Xid 79 fires *before* any RPC actually times out
+- The `_kgspRpcSanityCheck` at the *top* of the RPC path returns
+  `NV_ERR_GPU_IS_LOST` synchronously, never reaching the timeout-
+  bounded wait
+
+`RmOverrideInternalTimeoutsMs` only controls the *wait* timeout. It
+cannot help when the failure is in the synchronous sanity-check at the
+RPC entry. We can still run the Lever H test as a clean control to
+confirm zero impact, but the predicted outcome is **B (freeze
+identical)**.
+
+### The actual fixable surface
+
+Three layers where a Linux-side patch could meaningfully help:
+
+#### Layer 1: retry policy in `osHandleGpuLost` (lowest-risk patch)
+
+Currently reads `NV_PMC_BOOT_0` exactly once. If the read is wrong,
+it commits to GPU-lost. A simple change:
+
+```c
+// Hypothetical patch
+for (retry = 0; retry < 10; retry++) {
+    pmc_boot_0 = NV_PRIV_REG_RD32(nv->regs->map_u, NV_PMC_BOOT_0);
+    if (pmc_boot_0 == nvp->pmc_boot_0) {
+        return NV_OK;  // false alarm, GPU is fine
+    }
+    osDelayUs(100);  // wait for TB transient to clear
+}
+```
+
+10 × 100µs = 1ms total retry budget. Trivial cost on success path
+(no retries needed). On failure path we currently lose multiple
+seconds (RPC retries) plus a reboot, so 1ms of patience is well
+worth it.
+
+#### Layer 2: similar retry in `gpuSanityCheckRegRead_IMPL`
+
+The all-1s detection at `gpu_access.c:1264, 1281, 1298` could retry
+the original read several times before tripping the
+`osHandleGpuLost` cascade.
+
+#### Layer 3: PEX Reset and Recovery (the proper fix)
+
+Per NVIDIA's own comment, this is the missing piece. Implementing it
+is a much bigger lift — coordinates with Linux PCI core, AER subsystem,
+and likely requires GSP firmware cooperation. Not feasible as a
+hand-rolled patch.
+
+### Status code reference
+
+| Hex | Symbol | Meaning |
+|---|---|---|
+| `0x0000000f` | `NV_ERR_GPU_IS_LOST` | What we saw in our journal |
+| `0x0000003e` | `NV_ERR_GPU_IN_FULLCHIP_RESET` | Acceptable in the assert |
+| `0x60` | UVM `GLOBAL_ERROR_xxx` | Need to look up specific name |
+
+### What this changes for the investigation
+
+| Lever | Status |
+|---|---|
+| **A** Layer-2 cmdline | Already negative; explained — doesn't address the trigger |
+| **B** BIOS IFR hunt | Lower priority — even if BIOS pre-boot were enabled, transient TB failures still happen |
+| **C** File on #979 | Now MUCH stronger — we have the complete failure model with file:line citations |
+| **E** Source review | Substantially complete; this section is the synthesis |
+| **F** Firmware survey | Lower priority — bug isn't firmware-resident |
+| **G** WSL2 reproduction | Already positive; explained — Windows driver path has retries that Linux doesn't |
+| **H** Timeout override | **Predicted negative** before testing. Still worth running as a control to falsify the hypothesis cleanly. |
+| **NEW: I — driver patch + dkms rebuild** | Layer 1 retry patch in `osHandleGpuLost`. ~10 lines of C. ~hour to write + rebuild + test. **This is now the most promising lever.** |
+
 ## Source-review coverage gaps (parked reads)
 
 Honest inventory of what was NOT read end-to-end, in priority order. The

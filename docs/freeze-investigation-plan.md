@@ -281,6 +281,57 @@ Of the four firmware surfaces:
 Reduced to surfaces 1 and 4. Mostly housekeeping; pairs with Lever B
 (both touch host-firmware investigation).
 
+### Lever I — Patch driver + DKMS rebuild (NEW, derived from Lever E pass 3)
+
+Source review pass 3 (2026-05-03 evening) localised the bug to a single
+function: `osHandleGpuLost` in `src/nvidia/arch/nvalloc/unix/src/osinit.c`.
+The function reads `NV_PMC_BOOT_0` exactly once and commits to permanent
+"GPU lost" state if the read returns wrong value. NVIDIA themselves
+document the gap in the comment block: *"This doesn't support PEX Reset
+and Recovery yet."* See `source-review-notes.md` §"Pass 3" for the full
+failure model with kernel-log evidence.
+
+The patch surface is a ~10-line retry loop in `osHandleGpuLost` (and
+optionally similar in `gpuSanityCheckRegRead_IMPL`):
+
+```c
+// Pseudocode
+for (retry = 0; retry < N_RETRIES; retry++) {
+    pmc_boot_0 = NV_PRIV_REG_RD32(...NV_PMC_BOOT_0);
+    if (pmc_boot_0 == nvp->pmc_boot_0)
+        return NV_OK;  // transient cleared, GPU is fine
+    osDelayUs(100);
+}
+// only NOW do we commit to gpu-lost
+```
+
+Cost on success path: zero (no retries needed). Cost on TB transient: ~1ms
+of patience instead of ~minutes of RPC failure cascade + cold boot.
+
+Implementation steps:
+1. Clone `NVIDIA/open-gpu-kernel-modules` at our exact tag (already done at
+   `/root/nvidia-open-src/`)
+2. Apply the retry patch
+3. Build via DKMS: `make modules ; sudo make modules_install`
+4. Set up the build to override the dnf-managed kmod-nvidia-open-dkms
+   (specifically: `update-initramfs` or equivalent + module priority)
+5. Reboot, verify the patched module loads (check version via modinfo or
+   custom string in NVRM init message)
+6. Run the lite test
+7. If it works, longer soak; if it doesn't, gather more data
+
+Risk surface:
+- Need to manage dnf-managed dkms package vs hand-built module — easiest is
+  to install to `/lib/modules/$(uname -r)/extra/` which supersedes the
+  default location
+- Driver upgrades will overwrite our patch unless we maintain the patch
+  in a build script
+- Patched driver may need re-applying after every kernel upgrade
+
+This is the first lever that has a real shot at *fixing* (not just
+mitigating) the bug. It's also the lever closest to being a credible
+upstream PR if it works.
+
 ### Lever H — RmOverrideInternalTimeoutsMs (DERIVED FROM LEVER E)
 
 Source review (Lever E pass 2) found that Linux open module locks
