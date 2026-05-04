@@ -45,7 +45,7 @@ check_arg_in_cmdline() {
 section "1. Boot arguments (/proc/cmdline)"
 
 check_arg_in_cmdline 'thunderbolt.host_reset=false'
-check_arg_in_cmdline 'pci=realloc=off,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0'
+check_arg_in_cmdline 'pci=realloc=off,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0,noaer'
 check_arg_in_cmdline 'module_blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'rd.driver.blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'modprobe.blacklist=nouveau,nova_core'
@@ -62,16 +62,19 @@ check_arg_in_cmdline 'thunderbolt.clx=0'
 check_arg_in_cmdline 'pcie_port_pm=off'
 
 # Lever L (PCI AER disable). Disables AER reporting at the kernel level.
-# This breaks the AER -> DPC trigger chain (DPC requires AER reports
-# to fire), which we believe was contributing to the post-GPU-lost
-# host hang via PCIe port containment. The unpatched-but-AER-on path
-# leaves nv-pci.c (which has no pci_error_handlers registered) unable
-# to participate in kernel AER recovery, leading to stalls.
+# Final correct form (verified by extracting strings from running
+# vmlinux): noaer is a pci= sub-option, like realloc and earlydump.
+# So lever L is encoded as a comma-suffix to our existing pci= arg
+# rather than a separate parameter -- which is why the standalone
+# `noaer`, `pcie_aer_disable`, and `pcie_aer=off` attempts all failed
+# (the kernel parses pci= sub-options separately from top-level
+# kernel parameters; the others were not registered handlers in
+# Linux 6.19.x).
 #
-# Earlier attempt with `pcie_aer_disable` and `nodpc` was wrong --
-# kernel rejected both ('Unknown option' / 'Unknown kernel command
-# line parameter'). Correct flag is `pcie_aer=off`.
-check_arg_in_cmdline 'pcie_aer=off'
+# Confirmation: dmesg should NOT show "pcieport ...: AER: enabled
+# with IRQ ..." after this is active.
+# (The pci=noaer check above is implicitly covered by the comma-suffix
+# in the main pci= line.)
 
 # IOMMU should be in passthrough mode for kernel-managed devices. The current
 # domain-type setting is recorded in dmesg early in boot.
