@@ -45,7 +45,7 @@ check_arg_in_cmdline() {
 section "1. Boot arguments (/proc/cmdline)"
 
 check_arg_in_cmdline 'thunderbolt.host_reset=false'
-check_arg_in_cmdline 'pci=realloc=off,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0'
+check_arg_in_cmdline 'pci=realloc=off,pcie_bus_perf,hpmmioprefsize=256M,resource_alignment=35@0000:03:00.0,nodpc'
 check_arg_in_cmdline 'module_blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'rd.driver.blacklist=nouveau,nova_core'
 check_arg_in_cmdline 'modprobe.blacklist=nouveau,nova_core'
@@ -60,6 +60,15 @@ check_arg_in_cmdline 'iommu=pt'
 check_arg_in_cmdline 'pcie_aspm.policy=performance'
 check_arg_in_cmdline 'thunderbolt.clx=0'
 check_arg_in_cmdline 'pcie_port_pm=off'
+
+# Lever L (PCI AER + DPC disable). DPC isolates the GPU port on AER
+# uncorrectable errors, which intersects badly with our cleanup cascade
+# on Blackwell-eGPU GPU-lost handling (the kernel-side AER + DPC state
+# machine has no driver err_handler to dispatch to in the open module,
+# leading to host hang post-cleanup). pcie_aer_disable suppresses AER
+# reporting; nodpc (sub-option of pci=) disables DPC.
+check_arg_in_cmdline 'nodpc'
+check_arg_in_cmdline 'pcie_aer_disable'
 
 # IOMMU should be in passthrough mode for kernel-managed devices. The current
 # domain-type setting is recorded in dmesg early in boot.
