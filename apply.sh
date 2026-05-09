@@ -449,6 +449,28 @@ step "live state"
 # 81-aorus-egpu-compute-power.rules d3cold/power_control rewrites).
 udevadm trigger --subsystem-match=pci
 
+# Pre-flight: probe the GPU. If degraded, attempt recovery via reset.sh
+# (preserves BAR1 sizing — uses ReBAR resize / bus reset / M-recover, never
+# remove+rescan). If hard-wedged, skip live-state and let the user reboot;
+# files installed by apply.sh are durable and will pick up on next boot.
+if [[ -e /sys/bus/pci/devices/0000:04:00.0 ]] && [[ -x "$repo_root/reset.sh" ]]; then
+    if ! "$repo_root/reset.sh" --probe >/dev/null 2>&1; then
+        yellow "  GPU in degraded state — attempting reset.sh --auto recovery..."
+        if "$repo_root/reset.sh" --auto; then
+            green "  recovery succeeded; continuing live-state"
+        else
+            rc=$?
+            if [[ $rc -eq 2 ]]; then
+                yellow "  GPU is hard-wedged (link/config dead); skipping live-state."
+                yellow "  apply.sh files are installed; reboot to converge to live state."
+                exit 0  # files installed = success; live-state deferred
+            else
+                yellow "  recovery did not restore healthy state; continuing best-effort"
+            fi
+        fi
+    fi
+fi
+
 # If nvidia is already loaded and bound and persistenced is already running,
 # we are done and do not need to start anything. Otherwise, start the chain:
 # Read /proc/modules directly to avoid SIGPIPE on lsmod under pipefail.
