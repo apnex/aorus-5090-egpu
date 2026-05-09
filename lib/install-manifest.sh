@@ -46,13 +46,13 @@ EGPU_SERVICES_ACTIVE=(
     aorus-egpu-compute-load-nvidia.service
     aorus-egpu-bridge-link-cap.service
     aorus-egpu-observability-watchdog.service
-    aorus-egpu-lever-m-phase5-snapshot.service
 )
 
 # Retired services — apply.sh installs the unit file as historical archive
 # but leaves it `systemctl disable`d. Resurrection is a single
 # `systemctl enable --now <service>`. See docs/service-retirement-roadmap.md.
 EGPU_SERVICES_RETIRED=(
+    aorus-egpu-lever-m-phase5-snapshot.service
     aorus-egpu-wpr2-recovery.service
     aorus-egpu-uvm-keepalive.service
     aorus-egpu-link-monitor.service

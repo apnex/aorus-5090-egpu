@@ -28,13 +28,18 @@ repos:
         # mdslw default: format in place. --max-width=80 caps soft-wrap
         # column for terminals; 0 disables wrapping (sembr-only).
         args: ['--max-width=80']
-        # Skip generated/historical artefacts and patches that we don't
-        # author (NVIDIA's open-driver patch description prose may have
-        # its own line-wrap conventions).
+        # Skip generated/historical artefacts, patches we don't author,
+        # and table-heavy docs where mdslw can break wide table cells
+        # across lines (markdown tables require all pipes on one line;
+        # mdslw line-wrapping breaks table syntax for long rows).
         exclude: |
           (?x)^(
             archive/.*
             | patches/.*
+            | docs/service-retirement-roadmap\.md
+            | docs/lever-catalog\.md
+            | docs/failure-modes-index\.md
+            | docs/reliability-hypothesis-ledger\.md
           )$
 
   # ----- Markdownlint (structural checks; not prose flow) -----
