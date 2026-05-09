@@ -58,10 +58,10 @@ read_or_dash() { [[ -r "$1" ]] && cat "$1" 2>/dev/null || echo "-"; }
     echo
     echo "## M-recover counters"
     if [[ -d "$SYSFS" ]]; then
-        echo "fires:        $(read_or_dash $SYSFS/aorus_lever_m_fires)"
-        echo "successes:    $(read_or_dash $SYSFS/aorus_lever_m_successes)"
-        echo "surrenders:   $(read_or_dash $SYSFS/aorus_lever_m_surrenders)"
-        echo "last_fire_jf: $(read_or_dash $SYSFS/aorus_lever_m_last_fire_jiffies)"
+        echo "fires:        $(read_or_dash $SYSFS/tb_egpu_lever_m_fires)"
+        echo "successes:    $(read_or_dash $SYSFS/tb_egpu_lever_m_successes)"
+        echo "surrenders:   $(read_or_dash $SYSFS/tb_egpu_lever_m_surrenders)"
+        echo "last_fire_jf: $(read_or_dash $SYSFS/tb_egpu_lever_m_last_fire_jiffies)"
     else
         echo "(GPU at $GPU_BDF not present in sysfs)"
     fi
@@ -119,9 +119,9 @@ read_or_dash() { [[ -r "$1" ]] && cat "$1" 2>/dev/null || echo "-"; }
     fi
     echo
     echo "## Verdict"
-    fires=$(read_or_dash "$SYSFS/aorus_lever_m_fires")
-    successes=$(read_or_dash "$SYSFS/aorus_lever_m_successes")
-    surrenders=$(read_or_dash "$SYSFS/aorus_lever_m_surrenders")
+    fires=$(read_or_dash "$SYSFS/tb_egpu_lever_m_fires")
+    successes=$(read_or_dash "$SYSFS/tb_egpu_lever_m_successes")
+    surrenders=$(read_or_dash "$SYSFS/tb_egpu_lever_m_surrenders")
     if [[ "$fires" =~ ^[0-9]+$ ]] && [[ "$fires" -gt 0 ]]; then
         if [[ "$surrenders" =~ ^[0-9]+$ ]] && [[ "$surrenders" -gt 0 ]]; then
             echo "M-RECOVER-FIRED-AND-SURRENDERED: fires=$fires successes=$successes surrenders=$surrenders"

@@ -43,6 +43,39 @@ remove_if_exists() {
     fi
 }
 
+# -------------------------- protective auto-load blacklist stub (FIRST) --
+step "write protective auto-load blacklist stub"
+
+# Written FIRST, before any other action, to close the race window where
+# the existing autoload-blocking modprobe.d files are removed but the new
+# stub isn't yet in place. Without this, a `udevadm control --reload-rules`
+# (which fires events) or any kernel uevent during cleanup could trigger
+# `modprobe nvidia` from the GPU's modalias, which would proceed under
+# vendor /usr/lib/modprobe.d/nvidia.conf's `softdep nvidia post: nvidia-uvm
+# nvidia-drm` and freeze GNOME via nvidia-drm registering /dev/dri/cardN.
+#
+# The stub also stays in place after remove.sh completes — system stays
+# safely quiesced even if rebooted before apply.sh runs.
+cat > /etc/modprobe.d/zz-aorus-egpu-blacklist.conf <<'EOF'
+# Written by remove.sh — blocks nvidia auto-load while the aorus-egpu stack
+# is uninstalled. Without this, vendor /usr/lib/modprobe.d/nvidia.conf's
+# `softdep nvidia post: nvidia-uvm nvidia-drm` would fire on next boot and
+# freeze GNOME via nvidia-drm registering /dev/dri/cardN.
+#
+# To re-install the aorus-egpu stack:
+#   sudo /path/to/repo/apply.sh        # automatically removes this stub
+#
+# To revert to vanilla NVIDIA behaviour (GNOME freeze risk on this hardware):
+#   sudo rm /etc/modprobe.d/zz-aorus-egpu-blacklist.conf
+#   sudo reboot
+blacklist nvidia
+blacklist nvidia_drm
+blacklist nvidia_uvm
+blacklist nvidia_modeset
+EOF
+chmod 0644 /etc/modprobe.d/zz-aorus-egpu-blacklist.conf
+printf '  installed: /etc/modprobe.d/zz-aorus-egpu-blacklist.conf\n'
+
 # -------------------------------------------------- stop and disable services --
 step "stop and disable services"
 
@@ -234,38 +267,6 @@ done
 for f in "${LEGACY_VESTIGIAL_FILES[@]}"; do
     remove_if_exists "$f"
 done
-
-# --------------------------------- protective auto-load blacklist stub --
-step "write protective auto-load blacklist stub"
-
-# After remove.sh has wiped our /etc/modprobe.d/ files, the vendor
-# /usr/lib/modprobe.d/nvidia.conf is unshadowed and contains:
-#   softdep nvidia post: nvidia-uvm nvidia-drm
-# On next boot, udev would auto-load nvidia, then softdep loads nvidia-drm
-# which registers /dev/dri/cardN. GNOME mutter picks it up and freezes at
-# login (the original Problem 5 the project was built to avoid).
-#
-# This stub blocks all nvidia auto-load until either apply.sh runs (which
-# removes it as part of its migration step) or the user removes it manually.
-cat > /etc/modprobe.d/zz-aorus-egpu-blacklist.conf <<'EOF'
-# Written by remove.sh — blocks nvidia auto-load while the aorus-egpu stack
-# is uninstalled. Without this, vendor /usr/lib/modprobe.d/nvidia.conf's
-# `softdep nvidia post: nvidia-uvm nvidia-drm` would fire on next boot and
-# freeze GNOME via nvidia-drm registering /dev/dri/cardN.
-#
-# To re-install the aorus-egpu stack:
-#   sudo /path/to/repo/apply.sh        # automatically removes this stub
-#
-# To revert to vanilla NVIDIA behaviour (GNOME freeze risk on this hardware):
-#   sudo rm /etc/modprobe.d/zz-aorus-egpu-blacklist.conf
-#   sudo reboot
-blacklist nvidia
-blacklist nvidia_drm
-blacklist nvidia_uvm
-blacklist nvidia_modeset
-EOF
-chmod 0644 /etc/modprobe.d/zz-aorus-egpu-blacklist.conf
-printf '  installed: /etc/modprobe.d/zz-aorus-egpu-blacklist.conf\n'
 
 # ------------------------------------------------------- reload + summary --
 step "reload systemd and udev"

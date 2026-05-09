@@ -80,10 +80,10 @@ cmd_status() {
     if [[ -d /sys/module/nvidia ]]; then
         local fires successes surrenders
         for pdev in /sys/bus/pci/drivers/nvidia/*:*; do
-            [[ -e "$pdev/aorus_lever_m_fires" ]] || continue
-            fires=$(<"$pdev/aorus_lever_m_fires")
-            successes=$(<"$pdev/aorus_lever_m_successes")
-            surrenders=$(<"$pdev/aorus_lever_m_surrenders")
+            [[ -e "$pdev/tb_egpu_lever_m_fires" ]] || continue
+            fires=$(<"$pdev/tb_egpu_lever_m_fires")
+            successes=$(<"$pdev/tb_egpu_lever_m_successes")
+            surrenders=$(<"$pdev/tb_egpu_lever_m_surrenders")
             echo "  $(basename "$pdev"): fires=$fires successes=$successes surrenders=$surrenders"
         done
     fi
