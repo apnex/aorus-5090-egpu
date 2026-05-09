@@ -1,3 +1,14 @@
+> **ARCHIVED 2026-05-09** — ollama integration retired in favour of pursuing
+> vLLM as the next compute consumer. The systemd drop-in
+> (`ollama.service.d/aorus-egpu.conf`) has been removed from the install
+> manifest; the `ollama` UNIX group remains in use as the udev permission
+> gate for `/dev/nvidia*` (independent of whether the ollama daemon is
+> installed). This file is preserved as historical record of the integration
+> pattern; reapply by adding the drop-in back to `EGPU_DROP_INS` if the
+> ollama daemon returns to the workload set.
+>
+> ---
+
 # Service: ollama.service (with project drop-in)
 
 **Status:** ACTIVE — application service, drop-in adjusts ordering and dependencies

@@ -72,7 +72,6 @@ EGPU_SERVICES_RETIRED=(
 # Drop-ins — paths relative to /etc/systemd/system/.
 EGPU_DROP_INS=(
     nvidia-persistenced.service.d/aorus-egpu.conf
-    ollama.service.d/aorus-egpu.conf
 )
 
 # ------------------------------------------------------------- UDEV RULES --
