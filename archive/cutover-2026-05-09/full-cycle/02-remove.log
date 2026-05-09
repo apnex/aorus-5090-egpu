@@ -1,0 +1,94 @@
+
+=== write protective auto-load blacklist stub ===
+  installed: /etc/modprobe.d/zz-aorus-egpu-blacklist.conf
+
+=== stop and disable services ===
+  stopped: aorus-egpu-compute-load-nvidia.service
+  disabled: aorus-egpu-compute-load-nvidia.service
+  stopped: aorus-egpu-bridge-link-cap.service
+  disabled: aorus-egpu-bridge-link-cap.service
+  stopped: aorus-egpu-observability-watchdog.service
+  disabled: aorus-egpu-observability-watchdog.service
+  stopped: aorus-egpu-lever-m-phase5-snapshot.service
+  disabled: aorus-egpu-lever-m-phase5-snapshot.service
+  disabled: nvidia-persistenced.service
+
+=== graceful shutdown: unbind GPU + unload nvidia modules ===
+  unbound: 0000:04:00.0 from nvidia
+  all nvidia modules unloaded
+
+=== unmask system services ===
+  unmasked (restored from rename): switcheroo-control.service
+
+=== restore NVIDIA Vulkan / EGL / OpenCL loader entries ===
+  restored: /usr/share/vulkan/icd.d/nvidia_icd.x86_64.json
+  restored: /usr/share/vulkan/implicit_layer.d/nvidia_layers.json
+  restored: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+  restored: /etc/OpenCL/vendors/nvidia.icd
+
+=== remove systemd units + drop-ins ===
+  removed: /etc/systemd/system/aorus-egpu-compute-load-nvidia.service
+  removed: /etc/systemd/system/aorus-egpu-bridge-link-cap.service
+  removed: /etc/systemd/system/aorus-egpu-observability-watchdog.service
+  removed: /etc/systemd/system/aorus-egpu-lever-m-phase5-snapshot.service
+  removed: /etc/systemd/system/aorus-egpu-wpr2-recovery.service
+  removed: /etc/systemd/system/aorus-egpu-uvm-keepalive.service
+  removed: /etc/systemd/system/aorus-egpu-link-monitor.service
+  removed: /etc/systemd/system/aorus-egpu-pcie-tune.service
+  removed: /etc/systemd/system/nvidia-persistenced.service.d/aorus-egpu.conf
+  removed: /etc/systemd/system/ollama.service.d/aorus-egpu.conf
+  removed empty: /etc/systemd/system/nvidia-persistenced.service.d
+
+=== remove udev rules, modprobe + sysctl configs ===
+  removed: /etc/udev/rules.d/82-aorus-egpu-nvidia-permissions.rules
+  removed: /etc/udev/rules.d/82-aorus-egpu-lever-m-killswitch.rules
+  removed: /etc/udev/rules.d/79-aorus-egpu-no-autoload.rules
+  removed: /etc/udev/rules.d/81-aorus-egpu-compute-power.rules
+  removed: /etc/modprobe.d/aorus-egpu-compute-only.conf
+  removed: /etc/modprobe.d/aorus-egpu-lever-m.conf
+  removed: /etc/modprobe.d/blacklist-nouveau.conf
+  removed: /etc/modprobe.d/nvidia-power-management.conf
+  removed: /etc/modprobe.d/nvidia.conf
+  removed: /etc/sysctl.d/aorus-egpu-watchdog.conf
+
+=== remove userspace binaries + shared library ===
+  removed: /usr/local/sbin/aorus-egpu-detect-config
+  removed: /usr/local/sbin/aorus-egpu-compute-load-nvidia
+  removed: /usr/local/sbin/aorus-egpu-disable-audio
+  removed: /usr/local/sbin/aorus-egpu-status
+  removed: /usr/local/sbin/aorus-egpu-bridge-link-cap
+  removed: /usr/local/sbin/aorus-egpu-wpr2-recovery
+  removed: /usr/local/sbin/aorus-egpu-observability-watchdog
+  removed: /usr/local/sbin/aorus-egpu-uvm-keepalive
+  removed: /usr/local/sbin/aorus-egpu-link-monitor
+  removed: /usr/local/sbin/aorus-egpu-pcie-tune
+  removed: /usr/local/sbin/aorus-egpu-lever-m
+  removed: /usr/local/sbin/aorus-egpu-lever-m-killswitch-restore
+  removed: /usr/local/sbin/aorus-egpu-lever-m-phase5-snapshot
+  removed: /usr/local/lib/aorus-egpu/common.sh
+
+=== remove runtime config + state directories ===
+  removed: /etc/aorus-egpu
+  removed: /var/lib/aorus-egpu
+  removed: /usr/local/lib/aorus-egpu
+
+=== reload systemd and udev ===
+[31m[0m
+[31mremove.sh complete. System is in a quiesced state:[0m
+[31m  - All aorus-egpu / aorus-5090 services stopped + disabled[0m
+[31m  - GPU unbound from nvidia driver[0m
+[31m  - All nvidia kernel modules unloaded[0m
+[31m  - Protective blacklist stub installed at[0m
+[31m    /etc/modprobe.d/zz-aorus-egpu-blacklist.conf[0m
+[31m[0m
+[31mSafe to reboot now — system will boot without nvidia loaded.[0m
+[31m[0m
+[31mNext steps:[0m
+[31m  - To re-install:    sudo ./apply.sh && sudo ./tools/build-patched-driver.sh[0m
+[31m  - To revert vanilla: sudo rm /etc/modprobe.d/zz-aorus-egpu-blacklist.conf && sudo reboot[0m
+[31m[0m
+[31mWhat was NOT touched:[0m
+[31m  - Kernel boot args (thunderbolt.host_reset=false, pci=realloc, iommu=off, etc.)[0m
+[31m    Remove with: sudo grubby --update-kernel=ALL --remove-args="..."[0m
+[31m  - The custom-built NVIDIA kernel module at /usr/lib/modules/<kver>/extra/.[0m
+[31m    Revert by reinstalling kmod-nvidia / akmod-nvidia from your distro.[0m
