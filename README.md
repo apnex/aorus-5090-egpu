@@ -1,5 +1,58 @@
 # AORUS RTX 5090 AI Box on NUC 15 Pro+
 
+A reliability + recovery stack for running an **AORUS RTX 5090 AI Box** as a compute-only eGPU over **Thunderbolt 4** on **Linux**. Mitigates the silent host-freeze bug documented at [NVIDIA/open-gpu-kernel-modules#979](https://github.com/NVIDIA/open-gpu-kernel-modules/issues/979) via 30 patches against the NVIDIA open kernel module + manifest-driven userspace + in-driver recovery state machine (Lever M-recover, Lever Q-watchdog, close-path DIAG). Decode performance at WSL2 parity (~256 tok/s on llama3.1:8b). Validated 2026-05-09 on Intel NUC 15 Pro+ + Fedora 43.
+
+**Who this is for:** anyone running a TB4-attached NVIDIA GPU on Linux who's hit Mode B silent freezes, `GSP_LOCKDOWN` cascades, cold-cold-boot WPR2-stuck states, recovery storms, or close-path host wedges. The driver patches generalise across Blackwell + open driver; the userspace stack auto-detects per-host topology via `aorus-egpu-detect-config` → `/etc/aorus-egpu/config.env` and renders udev rule templates from it.
+
+**What this isn't:** not a *fix* for the upstream NVIDIA bug (it works around the open driver's commit-to-permanent-GPU-lost path on transient PCIe failures). Not a desktop / display config — eGPU is compute-only here. Not turnkey on dissimilar hardware — see "Validated platform" below; other TB enclosures or non-Intel hosts may need adjustments.
+
+## At a glance
+
+```
+$ sudo ./status.sh | tail -3
+  107 OK, 4 WARN, 0 FAIL (of 111 checks)
+Status: HEALTHY WITH WARNINGS - functional, see WARN items.
+
+$ nvidia-smi -L
+GPU 0: NVIDIA GeForce RTX 5090 (UUID: GPU-...)
+
+$ time nvidia-smi -L
+real    0m0.019s   ← persistenced keeps GPU state warm
+```
+
+## Quick start
+
+```bash
+git clone https://github.com/apnex/aorus-5090-egpu.git
+cd aorus-5090-egpu
+sudo ./apply.sh                       # install: services + udev + modprobe + scripts
+sudo ./tools/build-patched-driver.sh  # build patched NVIDIA open driver (one-time)
+sudo reboot                           # cold-boot brings up the full stack
+sudo ./status.sh                      # verify HEALTHY
+```
+
+## Recovery toolkit
+
+The four top-level scripts are all manifest-driven (single source of truth in [`lib/install-manifest.sh`](lib/install-manifest.sh)) and all idempotent:
+
+| Script | Purpose |
+|---|---|
+| `apply.sh` | Install + render templates + enable services. Pre-live-state probe; if degraded, attempts `reset.sh --auto` recovery. Resilient: install succeeds even if the GPU is unrecoverable, picks up on next boot. |
+| `status.sh` | 111-check read-only health audit. HEALTHY / WARN / FAIL exit codes. |
+| `remove.sh` | Graceful shutdown + uninstall. Stops services in dependency order, unbinds GPU, unloads modules, writes a protective stub that survives reboot to keep the system safe until next install. |
+| `reset.sh` | Recover from a degraded state without rebooting. `--probe` (8-layer health check) / `--auto` (escalating recovery: module reload → ReBAR resize → bus reset → M-recover force-trigger) / `--level N` (manual). All BAR1-preserving — never invokes PCI remove+rescan. |
+
+Plus [`tools/lint-identifiers.sh`](tools/lint-identifiers.sh) for pre-commit drift detection across the install surface.
+
+## Validated platform
+
+- **Hardware:** Intel NUC 15 Pro+ + AORUS GeForce RTX 5090 AI Box (TB4 / USB4)
+- **OS:** Fedora 43, kernel `6.19.14-200.fc43.x86_64`
+- **Driver:** NVIDIA open kernel modules 595.71.05 + 30 project patches (`595.71.05-aorus.12`)
+- **Service stack as of 2026-05-09:** 4 active services (`compute-load-nvidia`, `bridge-link-cap`, `observability-watchdog`, `lever-m-phase5-snapshot`) + `nvidia-persistenced` (warmup-latency optimisation; no longer load-bearing for stability). 4 retired services preserved as historical archive: `link-monitor`, `pcie-tune`, `uvm-keepalive`, `wpr2-recovery`.
+
+---
+
 > **Is your symptom in scope?** See [`docs/failure-modes-index.md`](docs/failure-modes-index.md)
 > for the master matrix of every failure mode this stack addresses
 > (host freezes on first CUDA op, cold-cold-boot WPR2-stuck, GSP_LOCKDOWN
