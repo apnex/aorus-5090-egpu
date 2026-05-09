@@ -445,10 +445,10 @@ else
     done
 
     drvo="$(<"$gpu_dev/driver_override")"
-    if [[ "$drvo" == "aorus_5090_manual" ]]; then
-        ok "GPU driver_override: aorus_5090_manual"
+    if [[ "$drvo" == "aorus_egpu_manual" ]]; then
+        ok "GPU driver_override: aorus_egpu_manual"
     else
-        warn "GPU driver_override: '$drvo' (expected aorus_5090_manual)"
+        warn "GPU driver_override: '$drvo' (expected aorus_egpu_manual)"
     fi
 
     mapfile -t res < "$gpu_dev/resource"
@@ -482,8 +482,8 @@ else
     fi
 
     drvo_a="$(<"$audio_dev/driver_override")"
-    if [[ "$drvo_a" == "aorus_5090_disabled" ]]; then
-        ok "HDMI audio driver_override: aorus_5090_disabled"
+    if [[ "$drvo_a" == "aorus_egpu_disabled" ]]; then
+        ok "HDMI audio driver_override: aorus_egpu_disabled"
     else
         warn "HDMI audio driver_override: '$drvo_a'"
     fi

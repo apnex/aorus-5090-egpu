@@ -13,7 +13,7 @@
 set -u
 
 KILLSWITCH_FILE=/var/lib/aorus-egpu/lever-m-killswitch
-SYSFS_PARAM=/sys/module/nvidia/parameters/NVreg_AorusLeverMRecoverEnable
+SYSFS_PARAM=/sys/module/nvidia/parameters/NVreg_TbEgpuLeverMRecoverEnable
 
 # Module may not have created /sys yet on add event; brief retry.
 for _ in 1 2 3 4 5; do

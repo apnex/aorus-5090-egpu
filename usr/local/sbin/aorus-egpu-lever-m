@@ -6,7 +6,7 @@
 #      Read by the driver at module init via kernel_read_file_from_path.
 #      Survives modprobe -r / nvidia.ko reloads. This is the SOURCE OF
 #      TRUTH for "is the lever engaged?".
-#   2. Runtime module param: /sys/module/nvidia/parameters/NVreg_AorusLeverMRecoverEnable
+#   2. Runtime module param: /sys/module/nvidia/parameters/NVreg_TbEgpuLeverMRecoverEnable
 #      What the driver is currently using. Updated immediately by this
 #      CLI so the change takes effect without reboot.
 #
@@ -19,7 +19,7 @@ set -euo pipefail
 
 KILLSWITCH_DIR=/var/lib/aorus-egpu
 KILLSWITCH_FILE="$KILLSWITCH_DIR/lever-m-killswitch"
-SYSFS_PARAM=/sys/module/nvidia/parameters/NVreg_AorusLeverMRecoverEnable
+SYSFS_PARAM=/sys/module/nvidia/parameters/NVreg_TbEgpuLeverMRecoverEnable
 
 require_root() {
     if [[ "$EUID" -ne 0 ]]; then

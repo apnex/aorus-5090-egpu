@@ -50,7 +50,7 @@ restore_manual_override_on_exit() {
     local rc=$?
 
     if [[ -n "${gpu_dev:-}" && -w "$gpu_dev/driver_override" ]]; then
-        printf '%s\n' aorus_5090_manual > "$gpu_dev/driver_override" || true
+        printf '%s\n' aorus_egpu_manual > "$gpu_dev/driver_override" || true
     fi
 
     exit "$rc"
@@ -177,7 +177,7 @@ fi
 
 # Restore the manual override now that we have bound on purpose; this prevents
 # any future udev re-add from auto-binding the device to a different driver.
-set_attr "$gpu_dev/driver_override" aorus_5090_manual
+set_attr "$gpu_dev/driver_override" aorus_egpu_manual
 trap - EXIT
 
 echo "RTX 5090 is bound to the base nvidia driver."

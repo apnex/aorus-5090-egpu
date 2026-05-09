@@ -54,7 +54,7 @@ read_or_dash() { [[ -r "$1" ]] && cat "$1" 2>/dev/null || echo "-"; }
     echo
     echo "## Kill-switch state (H3)"
     echo "file:    $(read_or_dash /var/lib/aorus-egpu/lever-m-killswitch)"
-    echo "runtime: $(read_or_dash /sys/module/nvidia/parameters/NVreg_AorusLeverMRecoverEnable)"
+    echo "runtime: $(read_or_dash /sys/module/nvidia/parameters/NVreg_TbEgpuLeverMRecoverEnable)"
     echo
     echo "## M-recover counters"
     if [[ -d "$SYSFS" ]]; then
