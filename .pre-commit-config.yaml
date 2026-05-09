@@ -1,0 +1,49 @@
+# pre-commit hooks for the aorus-egpu repo.
+#
+# Setup (one-time per clone):
+#   sudo dnf install pre-commit          # Fedora; or: pip install pre-commit
+#   pre-commit install                    # writes .git/hooks/pre-commit
+#
+# Manual run (any time):
+#   pre-commit run --all-files            # all hooks across the whole repo
+#   pre-commit run mdslw --all-files      # just one hook
+#
+# The hooks below are staged only (run on `git commit` against changed
+# files), but `--all-files` works for one-off cleanups.
+
+repos:
+  # ----- Semantic line breaks for markdown (sembr.org convention) -----
+  # Reformat staged .md files so each line ends at a clause/sentence
+  # boundary. Rendered output is unchanged; diffs become cleaner because
+  # edits no longer reflow whole paragraphs.
+  #
+  # Rationale + repo-wide convention: see CLAUDE.md.
+  - repo: local
+    hooks:
+      - id: mdslw
+        name: mdslw (semantic line breaks for markdown)
+        entry: mdslw
+        language: system
+        types: [markdown]
+        # mdslw default: format in place. --max-width=80 caps soft-wrap
+        # column for terminals; 0 disables wrapping (sembr-only).
+        args: ['--max-width=80']
+        # Skip generated/historical artefacts and patches that we don't
+        # author (NVIDIA's open-driver patch description prose may have
+        # its own line-wrap conventions).
+        exclude: |
+          (?x)^(
+            archive/.*
+            | patches/.*
+          )$
+
+  # ----- Markdownlint (structural checks; not prose flow) -----
+  # Catches inconsistent heading levels, missing blank lines around
+  # headings, mixed list markers, broken fenced code blocks, etc.
+  # Runs via Docker-less standalone binary if present; harmless if not.
+  # Add per-rule disable in .markdownlint.yaml if needed.
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        args: ['--config', '.markdownlint.yaml', '--ignore', 'archive', '--ignore', 'patches']

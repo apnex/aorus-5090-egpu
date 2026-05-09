@@ -1,0 +1,34 @@
+# markdownlint config for aorus-egpu repo.
+# Relaxes a few defaults that conflict with our conventions
+# (semantic line breaks → variable line lengths;
+# multiple sections with the same heading across different docs).
+
+# Default state for all rules
+default: true
+
+# Disabled rules:
+
+# MD013 — line length.
+# Disabled because we use semantic line breaks (per CLAUDE.md);
+# line lengths vary by clause boundary, not column count.
+MD013: false
+
+# MD024 — multiple headings with same content.
+# Many docs have repeated structural sections like
+# "## What changed" or "## Why retired" — that's the convention.
+MD024: false
+
+# MD033 — inline HTML.
+# Some docs use `<details>`/`<summary>` for collapsible sections
+# and `<br>` for explicit line breaks.
+MD033:
+  allowed_elements:
+    - details
+    - summary
+    - br
+    - sub
+    - sup
+
+# MD041 — first line must be top-level heading.
+# Some service docs start with frontmatter or a status block.
+MD041: false
