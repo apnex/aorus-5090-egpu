@@ -1,1 +1,0 @@
-./aorus-egpu-trust.o

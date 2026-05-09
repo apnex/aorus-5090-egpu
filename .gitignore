@@ -27,3 +27,11 @@ _out/
 # Python caches (test scripts use python sometimes)
 __pycache__/
 *.pyc
+
+# Kernel module build artefacts (kernel-modules/*/ build outputs)
+kernel-modules/*/.*.cmd
+kernel-modules/*/*.o
+kernel-modules/*/*.mod
+kernel-modules/*/*.mod.c
+kernel-modules/*/Module.symvers
+kernel-modules/*/modules.order
