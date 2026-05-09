@@ -1,0 +1,79 @@
+
+=== preflight ===
+
+=== reset source to clean state ===
+
+=== apply patch series ===
+  applying: 0001-osHandleGpuLost-retry-on-transient-pcie-failure.patch
+  applying: 0002-journal-rcdbAddRmGpuDump-shortcircuit-and-relax-assert.patch
+  applying: 0003-nvDumpAllEngines-break-on-gpu-lost.patch
+  applying: 0004-resserv-cleanup-asserts-accept-gpu-lost.patch
+  applying: 0005-version-mark-aorus-build.patch
+  applying: 0006-rpcRmApiFree-GSP-shortcircuit-on-gpu-lost.patch
+  applying: 0007-nv-pci-register-error-handlers-Lever-M-base.patch
+  applying: 0008-issueRpcAndWait-shortcircuit-on-gpu-lost-Lever-O.patch
+  applying: 0009-uvm-destroy-diagnostic-markers-Lever-P-probe.patch
+  applying: 0010-os-pci-is-disconnected-helpers-Lever-Q.patch
+  applying: 0011-osDevReadReg032-Lever-Q-passive.patch
+  applying: 0012-osDevReadReg008-016-Lever-Q-passive.patch
+  applying: 0013-osDevReadReg032-Lever-Q-active.patch
+  applying: 0014-Lever-Q-watchdog-kthread.patch
+  applying: 0015-Lever-Q-watchdog-sysfs-counters.patch
+  applying: 0016-Lever-M-recover-scaffolding.patch
+  applying: 0017-Lever-M-recover-probe-time-WPR2-detection.patch
+  applying: 0018-Lever-M-recover-diagnostic-telemetry.patch
+  applying: 0020-Phase-A-PCIe-LnkSta-AER-telemetry.patch
+  applying: 0021-G3-G-AER-Header-Log-capture.patch
+  applying: 0022-G3-H-clear-AER-UncMask-match-Windows.patch
+  applying: 0023-mode-b-telemetry-S1-S2-S3.patch
+  applying: 0024-Lever-M-recover-Commit3-hardening.patch
+  applying: 0025-Kbuild-version-from-version-mk.patch
+  applying: 0026-Lever-M-recover-sysfs-force-trigger.patch
+  applying: 0027-Lever-M-recover-dispatch-slot-reset-resume-from-work-handler.patch
+  applying: 0028-Lever-M-recover-attempt-count-reset-at-post-rmInit-OK.patch
+  applying: 0029-Lever-M-recover-close-path-diag-and-AER-surface-completion.patch
+  applying: 0030-Lever-M-recover-UVM-close-path-DIAG.patch
+
+=== build modules (6.19.14-200.fc43.x86_64, 16 parallel jobs) ===
+[32mbuild OK; module artifacts:[0m
+-rw-r--r--. 1 root root  5510120 May  8 19:32 /root/nvidia-open-src/kernel-open/nvidia-drm.ko
+-rw-r--r--. 1 root root 41601456 May  9 11:38 /root/nvidia-open-src/kernel-open/nvidia.ko
+-rw-r--r--. 1 root root  4871792 May  9 11:38 /root/nvidia-open-src/kernel-open/nvidia-modeset.ko
+-rw-r--r--. 1 root root   401280 May  8 19:32 /root/nvidia-open-src/kernel-open/nvidia-peermem.ko
+-rw-r--r--. 1 root root 57809376 May  9 11:38 /root/nvidia-open-src/kernel-open/nvidia-uvm.ko
+
+=== back up stock modules + install patched ===
+  backed up: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-drm.ko.xz -> /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-drm.ko.xz.dnf-stock-20260509-113847
+  installed: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-drm.ko.xz
+  backed up: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia.ko.xz -> /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia.ko.xz.dnf-stock-20260509-113847
+  installed: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia.ko.xz
+  backed up: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-modeset.ko.xz -> /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-modeset.ko.xz.dnf-stock-20260509-113847
+  installed: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-modeset.ko.xz
+  backed up: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-peermem.ko.xz -> /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-peermem.ko.xz.dnf-stock-20260509-113847
+  installed: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-peermem.ko.xz
+  backed up: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-uvm.ko.xz -> /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-uvm.ko.xz.dnf-stock-20260509-113847
+  installed: /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia-uvm.ko.xz
+
+=== firmware-path symlink ===
+  firmware path already present: /lib/firmware/nvidia/595.71.05-aorus.12
+
+=== depmod ===
+
+=== summary ===
+[32mPatched modules installed at /lib/modules/6.19.14-200.fc43.x86_64/extra[0m
+[32mStock modules backed up with suffix .dnf-stock-20260509-113847[0m
+
+Next:
+  1. sudo reboot
+  2. After reboot, verify the patched build is loaded:
+       modinfo nvidia | grep -E '^(version|srcversion|filename):'
+       (srcversion should differ from stock '58D233B8E3F4A2973D73151')
+  3. Run lite test and watch for the patch's NV_DBG_ERRORS marker:
+       dmesg | grep -i 'AORUS Lever'
+  4. If a transient was caught, you'll see:
+       AORUS Lever I: PCIe transient cleared after N retries (Nus) - GPU not lost
+
+Rollback:
+  sudo cp /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia.ko.xz.dnf-stock-20260509-113847 /lib/modules/6.19.14-200.fc43.x86_64/extra/nvidia.ko.xz
+  sudo depmod -a
+  sudo reboot
