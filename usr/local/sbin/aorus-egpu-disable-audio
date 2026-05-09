@@ -36,7 +36,7 @@ if [[ "$vendor" != "$EGPU_VENDOR_ID" || "$device" != "$EGPU_AUDIO_DEVICE_ID" ]];
 fi
 
 if [[ -w "$dev/driver_override" ]]; then
-    printf '%s\n' aorus_5090_disabled > "$dev/driver_override" 2>/dev/null || true
+    printf '%s\n' aorus_egpu_disabled > "$dev/driver_override" 2>/dev/null || true
 fi
 
 if [[ -L "$dev/driver" && -w "$dev/driver/unbind" ]]; then
