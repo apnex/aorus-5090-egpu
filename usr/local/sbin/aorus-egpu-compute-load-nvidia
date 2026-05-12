@@ -180,8 +180,33 @@ fi
 set_attr "$gpu_dev/driver_override" aorus_egpu_manual
 trap - EXIT
 
+# Engage full hardware init + persistence mode.
+#
+# Why: nvidia.ko is bound, but the driver does LAZY hardware bringup -
+# GSP firmware, PMU, and the AORUS waterblock thermal subsystem only fully
+# engage when /dev/nvidia0 is first opened. Without this, the cooler sits
+# at floor RPM, idle power is ~63 W instead of ~22 W in P8, and silicon
+# idles at ~40 C instead of ~34 C (measured 2026-05-12 on the parallel
+# nvidia-driver-injector geometry; same patched driver, same hardware).
+#
+# The compute-only architecture does not run a session-opening client at
+# boot, so without this step the GPU stays in lazy state until the first
+# inference workload triggers it - potentially hours after boot.
+#
+# `nvidia-smi -pm 1` does two things in one call:
+#   1. Opens /dev/nvidia0 -> first-client bringup (GSP, PMU, thermal).
+#   2. Sets a driver sysfs flag so the GPU stays initialized after exit.
+# This is NOT the retired nvidia-persistenced daemon - it is a runtime
+# driver flag with no userspace process.
+#
+# Tolerate failure: the bind itself succeeded. Lazy state is suboptimal
+# but the GPU is still functional - the warning is the right escalation.
+nvidia-smi -pm 1 >/dev/null 2>&1 \
+    || echo "WARNING: nvidia-smi -pm 1 failed; GPU may stay in lazy-init state (cooler at floor RPM, elevated idle power until first client open)" >&2
+
 echo "RTX 5090 is bound to the base nvidia driver."
 echo "nvidia_uvm is loaded (pre-staged for CUDA)."
+echo "Persistence mode enabled (GSP loaded, thermal subsystem engaged)."
 if [[ "${AORUS_5090_DISABLE_GSP:-0}" == "1" ]]; then
     echo "NVIDIA GSP firmware was disabled for this bind attempt."
 fi
